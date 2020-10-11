@@ -7,6 +7,7 @@
     (not asyncio) Interface to Docker
 """
 import os
+import re
 from datetime import datetime
 import docker
 import logging
@@ -51,7 +52,20 @@ class DockerInterface(object):  # pragma: no cover
                         str(x.labels.get("org.inginious.grading.agent_version")), DOCKER_AGENT_VERSION)
                     continue
 
-                created = datetime.strptime(x.attrs['Created'][:-4], "%Y-%m-%dT%H:%M:%S.%f").timestamp()
+                try:
+                    created = datetime.strptime(x.attrs['Created'][:-4], "%Y-%m-%dT%H:%M:%S.%f").timestamp()
+                except:
+                    # Docker sometimes gives strange timestamps
+                    # We'll ignore timezone and microsecond resolution and just search for a likely-looking string...
+                    m = re.search('(\d{4})[-/.]?(\d{2})[-/.]?(\d{1,2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?',
+                                  x.attrs['Created'], re.IGNORECASE)
+                    if (m == None):
+                        created = 0
+                        logging.getLogger("inginious.agent").warning(
+                            "Container %s has unparseable creation time (%s). May not be using latest version",
+                            title, x.attrs['Created'])
+                    else:
+                        created = datetime.strptime("{}-{}-{}T{}:{}:{}".format(m[1],m[2],m[3],m[4],m[5],m[6]), "%Y-%m-%dT%H:%M:%S").timestamp()
                 ports = [int(y) for y in x.labels["org.inginious.grading.ports"].split(
                     ",")] if "org.inginious.grading.ports" in x.labels else []
                 images[x.attrs['Id']] = {"title": title, "created": created, "ports": ports}

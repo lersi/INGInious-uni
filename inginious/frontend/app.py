@@ -9,6 +9,11 @@ import pymongo
 
 import inginious.frontend.pages.course_admin.utils as course_admin_utils
 import web
+
+# Fix for python 3.8:
+from web.template import ALLOWED_AST_NODES
+ALLOWED_AST_NODES.append('Constant')
+
 from inginious.frontend.fix_webpy_cookies import fix_webpy_cookies
 from inginious.frontend.pages.internalerror import internalerror_generator
 

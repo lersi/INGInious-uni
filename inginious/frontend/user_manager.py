@@ -394,12 +394,19 @@ class UserManager:
                 self._logger.exception("The binding email is already used by another account!")
             else:
                 # New user, create an account using email address
-                self._database.users.insert({"username": "",
+
+                # Use the username provided by auth plugin unless it exists in db (in which case allow user to choose.)
+                if self._database.users.find_one({"username": username}):
+                    newusername = ""
+                else:
+                    newusername = username
+
+                self._database.users.insert({"username": newusername,
                                             "realname": realname,
                                             "email": email,
                                             "bindings": {auth_id: [username, additional]},
                                             "language": self._session.get("language", "en")})
-                self.connect_user("", realname, email, self._session.get("language", "en"))
+                self.connect_user(newusername, realname, email, self._session.get("language", "en"))
 
     ##############################################
     #      User task/course info management      #

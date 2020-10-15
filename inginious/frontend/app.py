@@ -123,6 +123,17 @@ def _close_app(app, mongo_client, client):
     client.close()
     mongo_client.close()
 
+# Kludge to recognize https behind reverse proxy that handles SSL.
+# This should really be handled automatically by web.py
+# (and also support the newer standard Forward header)
+def detect_https():
+    ctx = web.ctx
+    proto = ctx.env.get('HTTP_X_FORWARDED_PROTO', "http")
+    if (proto != 'http'):
+        ctx.protocol = "https"
+        ctx.homedomain = ctx.protocol + '://' + ctx.host
+        ctx.home = ctx.homedomain + ctx.homepath
+
 
 def get_app(config):
     """
@@ -154,6 +165,9 @@ def get_app(config):
         database.user_tasks.ensure_index([("username", pymongo.ASCENDING)])
 
     appli = CookieLessCompatibleApplication(MongoStore(database, 'sessions'))
+
+    # Part of kludge to support SSL behind reverse proxy
+    appli.add_processor(web.loadhook(detect_https))
 
     # Init gettext
     available_translations = {

@@ -1,5 +1,5 @@
 # DOCKER-VERSION 1.1.0
-FROM    centos:7
+FROM    centos:8
 
 ENV LANG en_US.UTF-8  
 ENV LANGUAGE en_US:en  
@@ -11,8 +11,8 @@ LABEL org.inginious.grading.agent_version=2
 RUN     yum clean metadata && \
         yum -y install epel-release && \
         yum -y upgrade && \
-        yum -y install python python36-pip python36 python36-devel zip unzip tar sed openssh-server openssl bind-utils iproute file && \
-        pip3.6 install msgpack pyzmq jinja2 PyYAML timeout-decorator ipython mypy && \
+        yum -y install python38 python38-pip python38 python38-devel zip unzip tar sed openssh-server openssl bind-utils iproute file && \
+        pip3.8 install msgpack pyzmq jinja2 PyYAML timeout-decorator ipython mypy && \
         sed -i "s/override_install_langs=en_US.utf8/#override_install_langs=en_US.utf8/g" /etc/yum.conf && \
         yum -y reinstall glibc-common && \
         yum clean all
@@ -25,14 +25,14 @@ RUN     chmod -R 755 /INGInious/bin && \
 
 # Install everything needed to allow INGInious' python libs to be loaded
 RUN     chmod -R 644 /INGInious/inginious_container_api && \
-        mkdir -p /usr/lib/python3.6/site-packages/inginious_container_api && \
-        cp -R /INGInious/inginious_container_api/*.py  /usr/lib/python3.6/site-packages/inginious_container_api && \
-        echo "inginious_container_api" > /usr/lib/python3.6/site-packages/inginious_container_api.pth
+        mkdir -p /usr/lib/python3.8/site-packages/inginious_container_api && \
+        cp -R /INGInious/inginious_container_api/*.py  /usr/lib/python3.8/site-packages/inginious_container_api && \
+        echo "inginious_container_api" > /usr/lib/python3.8/site-packages/inginious_container_api.pth
 
 # This maintains backward compatibility
-RUN     mkdir -p /usr/lib/python3.6/site-packages/inginious && \
-        cp -R /INGInious/inginious_container_api/*.py  /usr/lib/python3.6/site-packages/inginious && \
-        echo "inginious" > /usr/lib/python3.6/site-packages/inginious.pth
+RUN     mkdir -p /usr/lib/python3.8/site-packages/inginious && \
+        cp -R /INGInious/inginious_container_api/*.py  /usr/lib/python3.8/site-packages/inginious && \
+        echo "inginious" > /usr/lib/python3.8/site-packages/inginious.pth
 
 # Delete unneeded folders
 RUN     rm -R /INGInious

@@ -13,8 +13,9 @@ RUN     yum clean metadata && \
         yum -y upgrade && \
         yum -y install python38 python38-pip python38 python38-devel zip unzip tar sed openssh-server openssl bind-utils iproute file && \
         pip3.8 install msgpack pyzmq jinja2 PyYAML timeout-decorator ipython mypy && \
-        sed -i "s/override_install_langs=en_US.utf8/#override_install_langs=en_US.utf8/g" /etc/yum.conf && \
+#        sed -i "s/override_install_langs=en_US.utf8/#override_install_langs=en_US.utf8/g" /etc/yum.conf && \
         yum -y reinstall glibc-common && \
+        yum -y install glibc-locale-source && localedef -i en_US -f UTF-8 en_US.UTF-8 && \
         yum clean all
 
 # Allow to run commands

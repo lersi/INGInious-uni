@@ -9,7 +9,6 @@ from copy import deepcopy
 import hashlib
 from web import utils
 import web
-from web.py3helpers import is_iter
 from web.session import SessionExpired
 
 
@@ -21,52 +20,6 @@ class CookieLessCompatibleApplication(web.application):
         super(CookieLessCompatibleApplication, self).__init__((), globals(), autoreload=False)
         self._session = CookieLessCompatibleSession(self, session_storage)
         self._translations = {}
-
-        # hacky fix until web.py is fixed
-        self.processors = [self.fix_unloadhook(x) for x in self.processors]
-
-    def fix_unloadhook(self, orig_func):
-        """ Fix web.py that raises StopIterations everywhere.
-
-            The bug in web.py lies (partly) on line 574 of application.py:
-
-                def build_result(result):
-                    for r in result:
-                        if PY2:
-                            yield utils.safestr(r)
-
-            The for loop "r in result" fails as result is a generator that raise sometimes StopIteration.
-            This is difficult to fix directly without modifying webpy in a lot of place, so we prefer fixing the symptoms.
-
-            When you do next(x) on a generator, and that this generator raise a StopIteration, next() catches the
-            StopIteration and raise in return a RuntimeError(("generator raised StopIteration",)).
-
-            That's what we catch here.
-
-            The generator is then given to another one, then to another one, etc, until it reaches the function
-            "unloadhook", that is a preprocessor, and is init by the constructor of the web.application (i.e. the super
-            constructor of this class) and is put inside the self.processors array.
-
-            We apply the fix on all processors as we can't find the one that is actually the one created by unloadhook
-            by inspection. This should not change anything.
-        """
-        def fix_generator(orig_generator):
-            try:
-                yield from orig_generator
-            except RuntimeError as e:
-                if e.args != ("generator raised StopIteration",):
-                    raise
-
-        def fix(x):
-            y = orig_func(x)
-            # the wsgi process thingy differentiates things that are a generator from things that are not one
-            # we need to fix only the generators
-            if is_iter(y): # web.py uses this to check for generators. A more "safe" way to do it would be to use
-                           # inspect.isgenerator(y) or inspect.isgeneratorfunction(y), but like this we ensure
-                           # we mimic the behavior of web.py
-                return fix_generator(y)
-            return y
-        return fix
 
     def add_translation(self, lang, translation):
         self._translations[lang] = translation

@@ -14,10 +14,7 @@ import web
 from web.template import ALLOWED_AST_NODES
 ALLOWED_AST_NODES.append('Constant')
 
-from inginious.frontend.fix_webpy_cookies import fix_webpy_cookies
 from inginious.frontend.pages.internalerror import internalerror_generator
-
-fix_webpy_cookies() # TODO: remove me once https://github.com/webpy/webpy/pull/419 is merge in web.py
 
 from gridfs import GridFS
 from inginious.frontend.arch_helper import create_arch, start_asyncio_and_zmq

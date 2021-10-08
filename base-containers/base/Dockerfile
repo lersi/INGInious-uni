@@ -18,6 +18,9 @@ RUN     yum clean metadata && \
         yum -y install glibc-locale-source && localedef -i en_US -f UTF-8 en_US.UTF-8 && \
         yum clean all
 
+# Force python3.8 to be the default python3 (otherwise a later installation of python3.6 could become default)
+RUN     update-alternatives --set python3 /usr/bin/python3.8
+
 # Allow to run commands
 ADD     . /INGInious
 RUN     chmod -R 755 /INGInious/bin && \

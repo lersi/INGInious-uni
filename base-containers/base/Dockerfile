@@ -1,5 +1,5 @@
 # DOCKER-VERSION 1.1.0
-FROM    centos:8
+FROM    rockylinux:8
 
 ENV LANG en_US.UTF-8  
 ENV LANGUAGE en_US:en  

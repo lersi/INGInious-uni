@@ -14,8 +14,8 @@ RUN     dnf clean metadata && \
         dnf -y upgrade && \
         dnf -y install python38 python38-pip python38-devel zip unzip tar sed openssh-server openssl bind-utils iproute file jq procps-ng man curl net-tools screen nano bc  && \
         pip3.8 install msgpack pyzmq jinja2 PyYAML timeout-decorator ipython mypy && \
-        dnf clean all
         dnf -y install glibc-locale-source && localedef -i en_US -f UTF-8 en_US.UTF-8 && \
+        dnf clean all 
 
 # Force python3.8 to be the default python3 (otherwise a later installation of python3.6 could become default)
 RUN     update-alternatives --set python3 /usr/bin/python3.8

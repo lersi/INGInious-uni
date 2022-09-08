@@ -63,9 +63,9 @@ class DockerInterface(object):  # pragma: no cover
             try:
                 title = x.labels["org.inginious.grading.name"]
                 try:
-	            created = datetime.strptime(x.attrs['Created'][:-4], "%Y-%m-%dT%H:%M:%S.%f").timestamp()
-	        except:
-	            # Docker sometimes gives strange timestamps
+                    created = datetime.strptime(x.attrs['Created'][:-4], "%Y-%m-%dT%H:%M:%S.%f").timestamp()
+                except:
+                    # Docker sometimes gives strange timestamps
                     # We'll ignore timezone and microsecond resolution and just search for a likely-looking string...
                     m = re.search('(\d{4})[-/.]?(\d{2})[-/.]?(\d{1,2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?',
                                   x.attrs['Created'], re.IGNORECASE)
@@ -76,6 +76,7 @@ class DockerInterface(object):  # pragma: no cover
                             title, x.attrs['Created'])
                     else:
                         created = datetime.strptime("{}-{}-{}T{}:{}:{}".format(m[1],m[2],m[3],m[4],m[5],m[6]), "%Y-%m-%dT%H:%M:%S").timestamp()
+
                 ports = [int(y) for y in x.labels["org.inginious.grading.ports"].split(
                     ",")] if "org.inginious.grading.ports" in x.labels else []
 

@@ -11,7 +11,11 @@ from inginious.frontend.parsable_text import ParsableText
 
 class APITasks(APIAuthenticatedPage):
     r"""
-        Endpoint /api/v0/courses/[a-zA-Z_\-\.0-9]+/tasks(/[a-zA-Z_\-\.0-9]+)?
+        Endpoint
+          ::
+
+            /api/v0/courses/[a-zA-Z_\-\.0-9]+/tasks(/[a-zA-Z_\-\.0-9]+)?
+
     """
 
     def _check_for_parsable_text(self, val):
@@ -27,7 +31,7 @@ class APITasks(APIAuthenticatedPage):
                 val[key] = self._check_for_parsable_text(val2)
         return val
 
-    def API_GET(self, courseid, taskid=None):  # pylint: disable=arguments-differ
+    def API_GET(self, courseid, taskid):  # pylint: disable=arguments-differ
         """
             List tasks available to the connected client. Returns a dict in the form
 
@@ -38,6 +42,7 @@ class APITasks(APIAuthenticatedPage):
                     {
                         "name": "Name of the course",     #the name of the course
                         "authors": [],
+                        "contact_url": "",
                         "deadline": "",
                         "status": "success"               # can be "succeeded", "failed" or "notattempted"
                         "grade": 0.0,
@@ -80,6 +85,7 @@ class APITasks(APIAuthenticatedPage):
                 "id": taskid,
                 "name": task.get_name(self.user_manager.session_language()),
                 "authors": task.get_authors(self.user_manager.session_language()),
+                "contact_url": task.get_contact_url(self.user_manager.session_language()),
                 "deadline": task.get_deadline(),
                 "status": "notviewed" if task_cache is None else "notattempted" if task_cache["tried"] == 0 else "succeeded" if task_cache["succeeded"] else "failed",
                 "grade": task_cache.get("grade", 0.0) if task_cache is not None else 0.0,

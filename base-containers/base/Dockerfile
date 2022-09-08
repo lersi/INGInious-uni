@@ -5,18 +5,17 @@ ENV LANG en_US.UTF-8
 ENV LANGUAGE en_US:en  
 ENV LC_ALL en_US.UTF-8
 
-LABEL org.inginious.grading.agent_version=2
+LABEL org.inginious.grading.agent_version=3
 
 # Install python, needed for scripts used in INGInious + locale support
-RUN     yum clean metadata && \
-        yum -y install epel-release && \
-        yum -y upgrade && \
-        yum -y install python38 python38-pip python38 python38-devel zip unzip tar sed openssh-server openssl bind-utils iproute file && \
+RUN     dnf clean metadata && \
+        dnf -y install langpacks-en && \
+        dnf -y install epel-release && \
+        dnf -y upgrade && \
+        dnf -y install python38 python38-pip python38-devel zip unzip tar sed openssh-server openssl bind-utils iproute file jq procps-ng man curl net-tools screen nano bc  && \
         pip3.8 install msgpack pyzmq jinja2 PyYAML timeout-decorator ipython mypy && \
-#        sed -i "s/override_install_langs=en_US.utf8/#override_install_langs=en_US.utf8/g" /etc/yum.conf && \
-        yum -y reinstall glibc-common && \
+        dnf clean all
         yum -y install glibc-locale-source && localedef -i en_US -f UTF-8 en_US.UTF-8 && \
-        yum clean all
 
 # Force python3.8 to be the default python3 (otherwise a later installation of python3.6 could become default)
 RUN     update-alternatives --set python3 /usr/bin/python3.8
@@ -46,7 +45,7 @@ RUN     groupadd --gid 4242 worker && \
         useradd --uid 4242 --gid 4242 worker --home-dir /task
 
 # Set locale params for SSH debug
-RUN     echo -e "export LANG=en_US.UTF-8\nexport LANGUAGE=en_US:en\nexport LC_ALL=en_US.UTF-8\n" > /etc/profile
+RUN     echo -e "LANG=en_US.UTF-8\nLANGUAGE=en_US:en\nLC_ALL=en_US.UTF-8" >> /etc/environment
 RUN     sed -i.bak '/^AcceptEnv/ d' /etc/ssh/sshd_config
 
 CMD ["INGInious"]

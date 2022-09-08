@@ -5,102 +5,39 @@
 
 """ Starts the webapp """
 import builtins
+import os
+import sys
+import flask
 import pymongo
-
-import inginious.frontend.pages.course_admin.utils as course_admin_utils
-import web
-
-# Fix for python 3.8:
-from web.template import ALLOWED_AST_NODES
-ALLOWED_AST_NODES.append('Constant')
-
-from inginious.frontend.pages.internalerror import internalerror_generator
+import oauthlib
 
 from gridfs import GridFS
+from binascii import hexlify
+from pymongo import MongoClient
+from werkzeug.exceptions import InternalServerError
+
+import inginious.frontend.pages.course_admin.utils as course_admin_utils
+import inginious.frontend.pages.preferences.utils as preferences_utils
+from inginious.frontend.environment_types import register_base_env_types
 from inginious.frontend.arch_helper import create_arch, start_asyncio_and_zmq
-from inginious.frontend.cookieless_app import CookieLessCompatibleApplication
-from inginious.frontend.courses import WebAppCourse
+from inginious.frontend.pages.utils import register_utils
 from inginious.frontend.plugin_manager import PluginManager
-from inginious.frontend.session_mongodb import MongoStore
 from inginious.frontend.submission_manager import WebAppSubmissionManager
 from inginious.frontend.submission_manager import update_pending_jobs
-from inginious.frontend.tasks import WebAppTask
 from inginious.frontend.template_helper import TemplateHelper
 from inginious.frontend.user_manager import UserManager
-from pymongo import MongoClient
-from web.debugerror import debugerror, emailerrors
-
-import inginious.frontend.pages.preferences.utils as preferences_utils
-from inginious import get_root_path
-from inginious.common.course_factory import create_factories
+from inginious.frontend.l10n_manager import L10nManager
+from inginious import get_root_path, __version__, DB_VERSION
+from inginious.frontend.course_factory import create_factories
 from inginious.common.entrypoints import filesystem_from_config_dict
 from inginious.common.filesystems.local import LocalFSProvider
 from inginious.frontend.lti_outcome_manager import LTIOutcomeManager
-
 from inginious.frontend.task_problems import *
-
-urls = (
-    r'/?', 'inginious.frontend.pages.index.IndexPage',
-    r'/index', 'inginious.frontend.pages.index.IndexPage',
-    r'/courselist', 'inginious.frontend.pages.courselist.CourseListPage',
-    r'/pages/([^/]+)', 'inginious.frontend.pages.utils.INGIniousStaticPage',
-    r'/signin', 'inginious.frontend.pages.utils.SignInPage',
-    r'/logout', 'inginious.frontend.pages.utils.LogOutPage',
-    r'/register', 'inginious.frontend.pages.register.RegistrationPage',
-    r'/auth/signin/([^/]+)', 'inginious.frontend.pages.social.AuthenticationPage',
-    r'/auth/callback/([^/]+)', 'inginious.frontend.pages.social.CallbackPage',
-    r'/auth/share/([^/]+)', 'inginious.frontend.pages.social.SharePage',
-    r'/course/([^/]+)', 'inginious.frontend.pages.course.CoursePage',
-    r'/course/([^/]+)/([^/]+)', 'inginious.frontend.pages.tasks.TaskPage',
-    r'/course/([^/]+)/([^/]+)/(.*)', 'inginious.frontend.pages.tasks.TaskPageStaticDownload',
-    r'/aggregation/([^/]+)', 'inginious.frontend.pages.aggregation.AggregationPage',
-    r'/queue', 'inginious.frontend.pages.queue.QueuePage',
-    r'/mycourses', 'inginious.frontend.pages.mycourses.MyCoursesPage',
-    r'/preferences', 'inginious.frontend.pages.preferences.utils.RedirectPage',
-    r'/preferences/profile', 'inginious.frontend.pages.preferences.profile.ProfilePage',
-    r'/preferences/bindings', 'inginious.frontend.pages.preferences.bindings.BindingsPage',
-    r'/preferences/delete', 'inginious.frontend.pages.preferences.delete.DeletePage',
-    r'/admin/([^/]+)', 'inginious.frontend.pages.course_admin.utils.CourseRedirect',
-    r'/admin/([^/]+)/settings', 'inginious.frontend.pages.course_admin.settings.CourseSettings',
-    r'/admin/([^/]+)/students', 'inginious.frontend.pages.course_admin.student_list.CourseStudentListPage',
-    r'/admin/([^/]+)/student/([^/]+)', 'inginious.frontend.pages.course_admin.student_info.CourseStudentInfoPage',
-    r'/submission/([^/]+)', 'inginious.frontend.pages.course_admin.submission.SubmissionPage',
-    r'/admin/([^/]+)/aggregations', 'inginious.frontend.pages.course_admin.aggregation_list.CourseAggregationListPage',
-    r'/admin/([^/]+)/aggregation/([^/]+)', 'inginious.frontend.pages.course_admin.aggregation_info.CourseAggregationInfoPage',
-    r'/admin/([^/]+)/submissions', 'inginious.frontend.pages.course_admin.submissions.CourseSubmissionsPage',
-    r'/admin/([^/]+)/tasks', 'inginious.frontend.pages.course_admin.task_list.CourseTaskListPage',
-    r'/admin/([^/]+)/tags', 'inginious.frontend.pages.course_admin.tags.CourseTagsPage',
-    r'/admin/([^/]+)/task/([^/]+)', 'inginious.frontend.pages.course_admin.task_info.CourseTaskInfoPage',
-    r'/admin/([^/]+)/edit/aggregation/([^/]+)', 'inginious.frontend.pages.course_admin.aggregation_edit.CourseEditAggregation',
-    r'/admin/([^/]+)/edit/aggregations', 'inginious.frontend.pages.course_admin.aggregation_edit.CourseEditAggregation',
-    r'/admin/([^/]+)/edit/task/([^/]+)', 'inginious.frontend.pages.course_admin.task_edit.CourseEditTask',
-    r'/admin/([^/]+)/edit/task/([^/]+)/files', 'inginious.frontend.pages.course_admin.task_edit_file.CourseTaskFiles',
-    r'/admin/([^/]+)/edit/task/([^/]+)/dd_upload', 'inginious.frontend.pages.course_admin.task_edit_file.CourseTaskFileUpload',
-    r'/admin/([^/]+)/download', 'inginious.frontend.pages.course_admin.download.CourseDownloadSubmissions',
-    r'/admin/([^/]+)/replay', 'inginious.frontend.pages.course_admin.replay.CourseReplaySubmissions',
-    r'/admin/([^/]+)/danger', 'inginious.frontend.pages.course_admin.danger_zone.CourseDangerZonePage',
-    r'/admin/([^/]+)/webdav', 'inginious.frontend.pages.course_admin.webdav.WebDavInfoPage',
-    r'/admin/([^/]+)/stats', 'inginious.frontend.pages.course_admin.statistics.CourseStatisticsPage',
-    r'/admin/([^/]+)/stats/([^/]+)/([^/]+)', 'inginious.frontend.pages.course_admin.statistics.CourseStatisticsPage',
-    r'/api/v0/auth_methods', 'inginious.frontend.pages.api.auth_methods.APIAuthMethods',
-    r'/api/v0/authentication', 'inginious.frontend.pages.api.authentication.APIAuthentication',
-    r'/api/v0/courses', 'inginious.frontend.pages.api.courses.APICourses',
-    r'/api/v0/courses/([a-zA-Z_\-\.0-9]+)', 'inginious.frontend.pages.api.courses.APICourses',
-    r'/api/v0/courses/([a-zA-Z_\-\.0-9]+)/tasks', 'inginious.frontend.pages.api.tasks.APITasks',
-    r'/api/v0/courses/([a-zA-Z_\-\.0-9]+)/tasks/([a-zA-Z_\-\.0-9]+)', 'inginious.frontend.pages.api.tasks.APITasks',
-    r'/api/v0/courses/([a-zA-Z_\-\.0-9]+)/tasks/([a-zA-Z_\-\.0-9]+)/submissions', 'inginious.frontend.pages.api.submissions.APISubmissions',
-    r'/api/v0/courses/([a-zA-Z_\-\.0-9]+)/tasks/([a-zA-Z_\-\.0-9]+)/submissions/([a-zA-Z_\-\.0-9]+)',
-        'inginious.frontend.pages.api.submissions.APISubmissionSingle',
-    r'/lti/([^/]+)/([^/]+)', 'inginious.frontend.pages.lti.LTILaunchPage',
-    r'/lti/bind', 'inginious.frontend.pages.lti.LTIBindPage',
-    r'/lti/task', 'inginious.frontend.pages.lti.LTITaskPage',
-    r'/lti/login', 'inginious.frontend.pages.lti.LTILoginPage'
-)
-
-urls_maintenance = (
-    '/.*', 'inginious.frontend.pages.maintenance.MaintenancePage'
-)
-
+from inginious.frontend.task_dispensers.toc import TableOfContents
+from inginious.frontend.task_dispensers.combinatory_test import CombinatoryTest
+from inginious.frontend.flask.mapping import init_flask_mapping, init_flask_maintenance_mapping
+from inginious.frontend.flask.mongo_sessions import MongoDBSessionInterface
+from inginious.frontend.flask.mail import mail
 
 def _put_configuration_defaults(config):
     """
@@ -111,25 +48,76 @@ def _put_configuration_defaults(config):
         config['allowed_file_extensions'] = [".c", ".cpp", ".java", ".oz", ".zip", ".tar.gz", ".tar.bz2", ".txt"]
     if 'max_file_size' not in config:
         config['max_file_size'] = 1024 * 1024
+
+    if 'session_parameters' not in config or 'secret_key' not in config['session_parameters']:
+        print("Please define a secret_key in the session_parameters part of the configuration.", file=sys.stderr)
+        print("You can simply add the following (the text between the lines, without the lines) "
+              "to your INGInious configuration file. We generated a random key for you.", file=sys.stderr)
+        print("-------------", file=sys.stderr)
+        print("session_parameters:", file=sys.stderr)
+        print('\ttimeout: 86400  # 24 * 60 * 60, # 24 hours in seconds', file=sys.stderr)
+        print('\tignore_change_ip: False # change this to True if you want user to keep their session if they change their IP', file=sys.stderr)
+        print('\tsecure: False # change this to True if you only use https', file=sys.stderr)
+        print('\tsecret_key: "{}"'.format(hexlify(os.urandom(32)).decode('utf-8')), file=sys.stderr)
+        print("-------------", file=sys.stderr)
+        exit(1)
+
+    if 'session_parameters' not in config:
+        config['session_parameters'] = {}
+    default_session_parameters = {
+        "cookie_name": "inginious_session_id",
+        "cookie_domain": None,
+        "cookie_path": None,
+        "samesite": "Lax",
+        "timeout": 86400,  # 24 * 60 * 60, # 24 hours in seconds
+        "ignore_change_ip": False,
+        "httponly": True,
+        "secret_key": "fLjUfxqXtfNoIldA0A0G",
+        "secure": False
+    }
+    for k, v in default_session_parameters.items():
+        if k not in config['session_parameters']:
+            config['session_parameters'][k] = v
+
+    # flask migration
+    config["DEBUG"] = config.get("web_debug", False)
+    config["SESSION_COOKIE_NAME"] = "inginious_session_id"
+    config["SESSION_USE_SIGNER"] = True
+    config["PERMANENT_SESSION_LIFETIME"] = config['session_parameters']["timeout"]
+    config["SECRET_KEY"] = config['session_parameters']["secret_key"]
+
+    smtp_conf = config.get('smtp', None)
+    if smtp_conf is not None:
+        config["MAIL_SERVER"] = smtp_conf["host"]
+        config["MAIL_PORT"] = int(smtp_conf["port"])
+        config["MAIL_USE_TLS"] = bool(smtp_conf.get("starttls", False))
+        config["MAIL_USE_SSL"] = bool(smtp_conf.get("usessl", False))
+        config["MAIL_USERNAME"] = smtp_conf.get("username", None)
+        config["MAIL_PASSWORD"] = smtp_conf.get("password", None)
+        config["MAIL_DEFAULT_SENDER"] = smtp_conf.get("sendername", "no-reply@ingnious.org")
+
     return config
 
 
-def _close_app(app, mongo_client, client):
+def get_homepath(ignore_session=False, force_cookieless=False):
+    """
+    :param ignore_session: Ignore the cookieless session_id that should be put in the URL
+    :param force_cookieless: Force the cookieless session; the link will include the session_creator if needed.
+    """
+    session = flask.session
+    request = flask.request
+    if not ignore_session and session.sid is not None and session.cookieless:
+        return request.url_root[:-1] + "/@" + session.sid + "@"
+    elif not ignore_session and force_cookieless:
+        return request.url_root[:-1] + "/@@"
+    else:
+        return request.url_root[:-1]
+
+
+def _close_app(mongo_client, client):
     """ Ensures that the app is properly closed """
-    app.stop()
     client.close()
     mongo_client.close()
-
-# Kludge to recognize https behind reverse proxy that handles SSL.
-# This should really be handled automatically by web.py
-# (and also support the newer standard Forward header)
-def detect_https():
-    ctx = web.ctx
-    proto = ctx.env.get('HTTP_X_FORWARDED_PROTO', "http")
-    if (proto != 'http'):
-        ctx.protocol = "https"
-        ctx.homedomain = ctx.protocol + '://' + ctx.host
-        ctx.home = ctx.homedomain + ctx.homepath
 
 
 def get_app(config):
@@ -138,10 +126,8 @@ def get_app(config):
     :return: A new app
     """
     # First, disable debug. It will be enabled in the configuration, later.
-    web.config.debug = False
 
     config = _put_configuration_defaults(config)
-
     mongo_client = MongoClient(host=config.get('mongo_opt', {}).get('host', 'localhost'))
     database = mongo_client[config.get('mongo_opt', {}).get('database', 'INGInious')]
     gridfs = GridFS(database)
@@ -149,49 +135,62 @@ def get_app(config):
     # Init database if needed
     db_version = database.db_version.find_one({})
     if db_version is None:
-        database.submissions.ensure_index([("username", pymongo.ASCENDING)])
-        database.submissions.ensure_index([("courseid", pymongo.ASCENDING)])
-        database.submissions.ensure_index([("courseid", pymongo.ASCENDING), ("taskid", pymongo.ASCENDING)])
-        database.submissions.ensure_index([("submitted_on", pymongo.DESCENDING)])  # sort speed
-        database.user_tasks.ensure_index(
+        database.submissions.create_index([("username", pymongo.ASCENDING)])
+        database.submissions.create_index([("courseid", pymongo.ASCENDING)])
+        database.submissions.create_index([("courseid", pymongo.ASCENDING), ("taskid", pymongo.ASCENDING)])
+        database.submissions.create_index([("submitted_on", pymongo.DESCENDING)])  # sort speed
+        database.submissions.create_index([("status", pymongo.ASCENDING)]) # update_pending_jobs speedup
+        database.user_tasks.create_index(
             [("username", pymongo.ASCENDING), ("courseid", pymongo.ASCENDING), ("taskid", pymongo.ASCENDING)],
             unique=True)
-        database.user_tasks.ensure_index([("username", pymongo.ASCENDING), ("courseid", pymongo.ASCENDING)])
-        database.user_tasks.ensure_index([("courseid", pymongo.ASCENDING), ("taskid", pymongo.ASCENDING)])
-        database.user_tasks.ensure_index([("courseid", pymongo.ASCENDING)])
-        database.user_tasks.ensure_index([("username", pymongo.ASCENDING)])
+        database.user_tasks.create_index([("username", pymongo.ASCENDING), ("courseid", pymongo.ASCENDING)])
+        database.user_tasks.create_index([("courseid", pymongo.ASCENDING), ("taskid", pymongo.ASCENDING)])
+        database.user_tasks.create_index([("courseid", pymongo.ASCENDING)])
+        database.user_tasks.create_index([("username", pymongo.ASCENDING)])
+        database.db_version.insert_one({"db_version": DB_VERSION})
+    elif db_version.get("db_version", 0) != DB_VERSION:
+        raise Exception("Please update the database before running INGInious")
 
-    appli = CookieLessCompatibleApplication(MongoStore(database, 'sessions'))
+    flask_app = flask.Flask(__name__)
 
-    # Part of kludge to support SSL behind reverse proxy
-    appli.add_processor(web.loadhook(detect_https))
+    flask_app.config.from_mapping(**config)
+    flask_app.session_interface = MongoDBSessionInterface(
+        mongo_client, config.get('mongo_opt', {}).get('database', 'INGInious'),
+        "sessions", config.get('SESSION_USE_SIGNER', False), True  # config.get('SESSION_PERMANENT', True)
+    )
 
     # Init gettext
     available_translations = {
         "fr": "Français",
-        "es": "Español"
+        "es": "Español",
+        "pt": "Português",
+        "el": "ελληνικά",
+        "vi": "Tiếng Việt",
+        "nl": "Nederlands",
+        "de": "Deutsch",
+        "he": "עִבְרִית"
     }
 
     available_languages = {"en": "English"}
     available_languages.update(available_translations)
 
-    appli.add_translation("en", gettext.NullTranslations())  # English does not need translation ;-)
-    for lang in available_translations.keys():
-        appli.add_translation(lang, gettext.translation('messages', get_root_path() + '/frontend/i18n', [lang]))
+    l10n_manager = L10nManager()
 
-    builtins.__dict__['_'] = appli.gettext
+    l10n_manager.translations["en"] = gettext.NullTranslations()  # English does not need translation ;-)
+    for lang in available_translations.keys():
+        l10n_manager.translations[lang] = gettext.translation('messages', get_root_path() + '/frontend/i18n', [lang])
+
+    builtins.__dict__['_'] = l10n_manager.gettext
 
     if config.get("maintenance", False):
-        template_helper = TemplateHelper(PluginManager(), None,
-                                         'frontend/templates',
-                                         'frontend/templates/layout',
-                                         'frontend/templates/layout_lti',
-                                         config.get('use_minified_js', True))
-        template_helper.add_to_template_globals("get_homepath", appli.get_homepath)
+        template_helper = TemplateHelper(PluginManager(), None, config.get('use_minified_js', True))
+        template_helper.add_to_template_globals("get_homepath", get_homepath)
+        template_helper.add_to_template_globals("pkg_version", __version__)
+        template_helper.add_to_template_globals("available_languages", available_languages)
         template_helper.add_to_template_globals("_", _)
-        appli.template_helper = template_helper
-        appli.init_mapping(urls_maintenance)
-        return appli.wsgifunc(), appli.stop
+        flask_app.template_helper = template_helper
+        init_flask_maintenance_mapping(flask_app)
+        return flask_app.wsgi_app, lambda: None
 
     default_allowed_file_extensions = config['allowed_file_extensions']
     default_max_file_size = config['max_file_size']
@@ -201,12 +200,19 @@ def get_app(config):
     # Init the different parts of the app
     plugin_manager = PluginManager()
 
+    # Add the "agent types" inside the frontend, to allow loading tasks and managing envs
+    register_base_env_types()
+
     # Create the FS provider
     if "fs" in config:
         fs_provider = filesystem_from_config_dict(config["fs"])
     else:
         task_directory = config["tasks_directory"]
         fs_provider = LocalFSProvider(task_directory)
+
+    default_task_dispensers = {
+        task_dispenser.get_id(): task_dispenser for task_dispenser in [TableOfContents, CombinatoryTest]
+    }
 
     default_problem_types = {
         problem_type.get_type(): problem_type for problem_type in [DisplayableCodeProblem,
@@ -216,9 +222,9 @@ def get_app(config):
                                                                    DisplayableMatchProblem]
     }
 
-    course_factory, task_factory = create_factories(fs_provider, default_problem_types, plugin_manager, WebAppCourse, WebAppTask)
+    course_factory, task_factory = create_factories(fs_provider, default_task_dispensers, default_problem_types, plugin_manager, database)
 
-    user_manager = UserManager(appli.get_session(), database, config.get('superadmins', []))
+    user_manager = UserManager(database, config.get('superadmins', []))
 
     update_pending_jobs(database)
 
@@ -227,82 +233,88 @@ def get_app(config):
     lti_outcome_manager = LTIOutcomeManager(database, user_manager, course_factory)
 
     submission_manager = WebAppSubmissionManager(client, user_manager, database, gridfs, plugin_manager, lti_outcome_manager)
+    template_helper = TemplateHelper(plugin_manager, user_manager, config.get('use_minified_js', True))
 
-    template_helper = TemplateHelper(plugin_manager, user_manager, 'frontend/templates',
-                                     'frontend/templates/layout',
-                                     'frontend/templates/layout_lti',
-                                     config.get('use_minified_js', True))
+    register_utils(database, user_manager, template_helper)
 
-
+    is_tos_defined = config.get("privacy_page", "") and config.get("terms_page", "")
 
     # Init web mail
-    smtp_conf = config.get('smtp', None)
-    if smtp_conf is not None:
-        web.config.smtp_server = smtp_conf["host"]
-        web.config.smtp_port = int(smtp_conf["port"])
-        web.config.smtp_starttls = bool(smtp_conf.get("starttls", False))
-        web.config.smtp_username = smtp_conf.get("username", "")
-        web.config.smtp_password = smtp_conf.get("password", "")
-        web.config.smtp_sendername = smtp_conf.get("sendername", "no-reply@ingnious.org")
+    mail.init_app(flask_app)
 
     # Add some helpers for the templates
     template_helper.add_to_template_globals("_", _)
     template_helper.add_to_template_globals("str", str)
     template_helper.add_to_template_globals("available_languages", available_languages)
-    template_helper.add_to_template_globals("get_homepath", appli.get_homepath)
+    template_helper.add_to_template_globals("get_homepath", get_homepath)
+    template_helper.add_to_template_globals("pkg_version", __version__)
     template_helper.add_to_template_globals("allow_registration", config.get("allow_registration", True))
     template_helper.add_to_template_globals("sentry_io_url", config.get("sentry_io_url"))
     template_helper.add_to_template_globals("user_manager", user_manager)
     template_helper.add_to_template_globals("default_allowed_file_extensions", default_allowed_file_extensions)
     template_helper.add_to_template_globals("default_max_file_size", default_max_file_size)
+    template_helper.add_to_template_globals("is_tos_defined", is_tos_defined)
+    template_helper.add_to_template_globals("privacy_page", config.get("privacy_page", None))
     template_helper.add_other("course_admin_menu",
-                              lambda course, current: course_admin_utils.get_menu(course, current, template_helper.get_renderer(False),
+                              lambda course, current: course_admin_utils.get_menu(course, current, template_helper.render,
                                                                                   plugin_manager, user_manager))
     template_helper.add_other("preferences_menu",
-                              lambda current: preferences_utils.get_menu(appli, current, template_helper.get_renderer(False),
-                                                                                 plugin_manager, user_manager))
+                              lambda current: preferences_utils.get_menu(config.get("allow_deletion", True),
+                                                                         current, template_helper.render,
+                                                                         plugin_manager, user_manager))
 
     # Not found page
-    appli.notfound = lambda: web.notfound(template_helper.get_renderer().notfound('Page not found'))
+    def flask_not_found(e):
+        return template_helper.render("notfound.html", message=e.description), 404
+    flask_app.register_error_handler(404, flask_not_found)
 
-    # Enable stacktrace display if needed
+    # Forbidden page
+    def flask_forbidden(e):
+        return template_helper.render("forbidden.html", message=e.description), 403
+    flask_app.register_error_handler(403, flask_forbidden)
+
+    # Enable debug mode if needed
     web_debug = config.get('web_debug', False)
-    appli.internalerror = internalerror_generator(template_helper.get_renderer(False))
-    if web_debug is True:
-        web.config.debug = True
-        appli.internalerror = debugerror
-    elif isinstance(web_debug, str):
-        web.config.debug = False
-        appli.internalerror = emailerrors(web_debug, appli.internalerror)
+    flask_app.debug = web_debug
+    oauthlib.set_debug(web_debug)
+
+    def flask_internalerror(e):
+        return template_helper.render("internalerror.html", message=e.description), 500
+    flask_app.register_error_handler(InternalServerError, flask_internalerror)
 
     # Insert the needed singletons into the application, to allow pages to call them
-    appli.plugin_manager = plugin_manager
-    appli.course_factory = course_factory
-    appli.task_factory = task_factory
-    appli.submission_manager = submission_manager
-    appli.user_manager = user_manager
-    appli.template_helper = template_helper
-    appli.database = database
-    appli.gridfs = gridfs
-    appli.default_allowed_file_extensions = default_allowed_file_extensions
-    appli.default_max_file_size = default_max_file_size
-    appli.backup_dir = config.get("backup_directory", './backup')
-    appli.webterm_link = config.get("webterm", None)
-    appli.lti_outcome_manager = lti_outcome_manager
-    appli.allow_registration = config.get("allow_registration", True)
-    appli.allow_deletion = config.get("allow_deletion", True)
-    appli.available_languages = available_languages
-    appli.welcome_page = config.get("welcome_page", None)
-    appli.static_directory = config.get("static_directory", "./static")
-    appli.webdav_host = config.get("webdav_host", None)
+    flask_app.get_homepath = get_homepath
+    flask_app.plugin_manager = plugin_manager
+    flask_app.course_factory = course_factory
+    flask_app.task_factory = task_factory
+    flask_app.submission_manager = submission_manager
+    flask_app.user_manager = user_manager
+    flask_app.l10n_manager = l10n_manager
+    flask_app.template_helper = template_helper
+    flask_app.database = database
+    flask_app.gridfs = gridfs
+    flask_app.client = client
+    flask_app.default_allowed_file_extensions = default_allowed_file_extensions
+    flask_app.default_max_file_size = default_max_file_size
+    flask_app.backup_dir = config.get("backup_directory", './backup')
+    flask_app.webterm_link = config.get("webterm", None)
+    flask_app.lti_outcome_manager = lti_outcome_manager
+    flask_app.allow_registration = config.get("allow_registration", True)
+    flask_app.allow_deletion = config.get("allow_deletion", True)
+    flask_app.available_languages = available_languages
+    flask_app.welcome_page = config.get("welcome_page", None)
+    flask_app.terms_page = config.get("terms_page", None)
+    flask_app.privacy_page = config.get("privacy_page", None)
+    flask_app.static_directory = config.get("static_directory", "./static")
+    flask_app.webdav_host = config.get("webdav_host", None)
 
     # Init the mapping of the app
-    appli.init_mapping(urls)
+    init_flask_mapping(flask_app)
 
     # Loads plugins
-    plugin_manager.load(client, appli, course_factory, task_factory, database, user_manager, submission_manager, config.get("plugins", []))
+    plugin_manager.load(client, flask_app, course_factory, task_factory, database, user_manager, submission_manager, config.get("plugins", []))
 
     # Start the inginious.backend
     client.start()
 
-    return appli.wsgifunc(), lambda: _close_app(appli, mongo_client, client)
+    return flask_app.wsgi_app, lambda: _close_app(mongo_client, client)

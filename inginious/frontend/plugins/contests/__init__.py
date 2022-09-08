@@ -10,8 +10,9 @@ from collections import OrderedDict
 from datetime import datetime, timedelta
 
 import pymongo
-import web
+import flask
 
+from werkzeug.exceptions import NotFound
 from inginious.frontend.accessible_time import AccessibleTime
 from inginious.frontend.pages.course_admin.utils import INGIniousAdminPage
 from inginious.frontend.pages.utils import INGIniousAuthPage
@@ -32,10 +33,10 @@ def task_accessibility(course, task, default): # pylint: disable=unused-argument
 
 def additional_headers():
     """ Additional HTML headers """
-    return '<link href="' + web.ctx.homepath \
+    return '<link href="' + flask.request.url_root \
            + '/static/plugins/contests/scoreboard.css" rel="stylesheet">' \
-             '<script src="' + web.ctx.homepath + '/static/plugins/contests/jquery.countdown.min.js"></script>' \
-             '<script src="' + web.ctx.homepath + '/static/plugins/contests/contests.js"></script>'
+             '<script src="' + flask.request.url_root + '/static/plugins/contests/jquery.countdown.min.js"></script>' \
+             '<script src="' + flask.request.url_root + '/static/plugins/contests/contests.js"></script>'
 
 
 def get_contest_data(course):
@@ -55,7 +56,8 @@ def course_menu(course, template_helper):
         start = datetime.strptime(contest_data['start'], "%Y-%m-%d %H:%M:%S")
         end = datetime.strptime(contest_data['end'], "%Y-%m-%d %H:%M:%S")
         blackout = end - timedelta(hours=contest_data['blackout'])
-        return str(template_helper.get_custom_renderer('frontend/plugins/contests', layout=False).course_menu(course, start, end, blackout))
+        return template_helper.render("course_menu.html", template_folder="frontend/plugins/contests",
+                                      course=course, start=start, end=end, blackout=blackout)
     else:
         return None
 
@@ -67,7 +69,7 @@ class ContestScoreboard(INGIniousAuthPage):
         course = self.course_factory.get_course(courseid)
         contest_data = get_contest_data(course)
         if not contest_data['enabled']:
-            raise web.notfound()
+            raise NotFound()
         start = datetime.strptime(contest_data['start'], "%Y-%m-%d %H:%M:%S")
         end = datetime.strptime(contest_data['end'], "%Y-%m-%d %H:%M:%S")
         blackout = end - timedelta(hours=contest_data['blackout'])
@@ -147,8 +149,9 @@ class ContestScoreboard(INGIniousAuthPage):
                 results[user]["rank"] = current_rank
                 results[user]["displayed_rank"] = ""
 
-        return self.template_helper.get_custom_renderer('frontend/plugins/contests').\
-            scoreboard(course, start, end, blackout, tasks, results, activity)
+        return self.template_helper.render("scoreboard.html", template_folder="frontend/plugins/contests",
+                                           course=course, start=start, end=end, blackout=blackout, tasks=tasks,
+                                           results=results, activity=activity)
 
 
 class ContestAdmin(INGIniousAdminPage):
@@ -164,14 +167,15 @@ class ContestAdmin(INGIniousAdminPage):
         """ GET request: simply display the form """
         course, __ = self.get_course_and_check_rights(courseid, allow_all_staff=False)
         contest_data = get_contest_data(course)
-        return self.template_helper.get_custom_renderer('frontend/plugins/contests').admin(course, contest_data, None, False)
+        return self.template_helper.render("admin.html", template_folder="frontend/plugins/contests", course=course,
+                                           data=contest_data, errors=None, saved=False)
 
     def POST_AUTH(self, courseid):  # pylint: disable=arguments-differ
         """ POST request: update the settings """
         course, __ = self.get_course_and_check_rights(courseid, allow_all_staff=False)
         contest_data = get_contest_data(course)
 
-        new_data = web.input()
+        new_data = flask.request.form
         errors = []
         try:
             contest_data['enabled'] = new_data.get('enabled', '0') == '1'
@@ -210,9 +214,11 @@ class ContestAdmin(INGIniousAdminPage):
 
         if len(errors) == 0:
             self.save_contest_data(course, contest_data)
-            return self.template_helper.get_custom_renderer('frontend/plugins/contests').admin(course, contest_data, None, True)
+            return self.template_helper.render("admin.html", template_folder="frontend/plugins/contests", course=course,
+                                               data=contest_data, errors=None, saved=True)
         else:
-            return self.template_helper.get_custom_renderer('frontend/plugins/contests').admin(course, contest_data, errors, False)
+            return self.template_helper.render("admin.html", template_folder="frontend/plugins/contests", course=course,
+                                               data=contest_data, errors=errors, saved=False)
 
 
 def init(plugin_manager, course_factory, client, config):  # pylint: disable=unused-argument
@@ -226,8 +232,8 @@ def init(plugin_manager, course_factory, client, config):  # pylint: disable=unu
             }
     """
 
-    plugin_manager.add_page('/contest/([^/]+)', ContestScoreboard)
-    plugin_manager.add_page('/admin/([^/]+)/contest', ContestAdmin)
+    plugin_manager.add_page('/contest/<courseid>', ContestScoreboard.as_view('contestscoreboard'))
+    plugin_manager.add_page('/admin/<courseid>/contest', ContestAdmin.as_view('contestadmin'))
     plugin_manager.add_hook('course_admin_menu', add_admin_menu)
     plugin_manager.add_hook('task_accessibility', task_accessibility)
     plugin_manager.add_hook('header_html', additional_headers)

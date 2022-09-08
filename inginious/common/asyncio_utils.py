@@ -10,6 +10,7 @@
 import asyncio
 import threading
 from functools import wraps, partial
+from typing import TypeVar, Generic
 
 
 class AsyncIteratorWrapper(object):
@@ -44,15 +45,18 @@ class AsyncIteratorWrapper(object):
         self._loop.call_soon_threadsafe(asyncio.ensure_future, self._add_to_queue(self._last_item))
 
 
-class AsyncProxy(object):
+T = TypeVar('T')
+
+
+class AsyncProxy(Generic[T]):
     """ An asyncio proxy for modules and classes """
-    def __init__(self, module, loop=None, executor=None):
+    def __init__(self, module: T, loop=None, executor=None):
         self._module = module
         self._loop = loop or asyncio.get_event_loop()
         self._executor = executor
 
     @property
-    def sync(self):
+    def sync(self) -> T:
         """ Return the original sync module/class """
         return self._module
 
@@ -67,3 +71,17 @@ class AsyncProxy(object):
             return await self._loop.run_in_executor(self._executor, f)
 
         return _inner
+
+
+def create_safe_task(loop, logger, coroutine):
+    """ Calls loop.create_task with a safe (== with logged exception) coroutine """
+    task = loop.create_task(coroutine)
+    task.add_done_callback(lambda task: __log_safe_task(logger, task))
+    return task
+
+
+def __log_safe_task(logger, task):
+    """ Logs the exception if one occurs in a given task """
+    exception = task.exception()
+    if exception is not None:
+        logger.exception("An exception occurred while running a Task", exc_info=exception)

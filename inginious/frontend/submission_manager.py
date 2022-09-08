@@ -11,11 +11,12 @@ import os.path
 import tarfile
 import tempfile
 import time
-from datetime import datetime
-
+from typing import Dict, List
 import bson
 import pymongo
-import web
+
+import flask
+from datetime import datetime
 from bson.objectid import ObjectId
 from pymongo.collection import ReturnDocument
 
@@ -26,32 +27,34 @@ from inginious.frontend.parsable_text import ParsableText
 class WebAppSubmissionManager:
     """ Manages submissions. Communicates with the database and the client. """
 
-    def __init__(self, client, user_manager, database, gridfs, hook_manager, lti_outcome_manager):
+    def __init__(self, client, user_manager, database, gridfs, plugin_manager, lti_outcome_manager):
         """
         :type client: inginious.client.client.AbstractClient
         :type user_manager: inginious.frontend.user_manager.UserManager
         :type database: pymongo.database.Database
         :type gridfs: gridfs.GridFS
-        :type hook_manager: inginious.common.hook_manager.HookManager
+        :type plugin_manager: inginious.frontend.plugin_manager.PluginManager
         :return:
         """
         self._client = client
         self._user_manager = user_manager
         self._database = database
         self._gridfs = gridfs
-        self._hook_manager = hook_manager
+        self._plugin_manager = plugin_manager
         self._logger = logging.getLogger("inginious.webapp.submissions")
         self._lti_outcome_manager = lti_outcome_manager
 
-    def _job_done_callback(self, submissionid, task, result, grade, problems, tests, custom, state, archive, stdout, stderr, newsub=True):
+    def _job_done_callback(self, submissionid, task, result, grade, problems, tests, custom, state, archive, stdout,
+                           stderr, newsub=True):
         """ Callback called by Client when a job is done. Updates the submission in the database with the data returned after the completion of the
         job """
         submission = self.get_submission(submissionid, False)
+
         submission = self.get_input_from_submission(submission)
 
         data = {
             "status": ("done" if result[0] == "success" or result[0] == "failed" else "error"),
-             # error only if error was made by INGInious
+            # error only if error was made by INGInious
             "result": result[0],
             "grade": grade,
             "text": result[1],
@@ -68,6 +71,7 @@ class WebAppSubmissionManager:
             "jobid": "",
             "ssh_host": "",
             "ssh_port": "",
+            "ssh_user": "",
             "ssh_password": ""
         }
 
@@ -78,7 +82,7 @@ class WebAppSubmissionManager:
             return_document=ReturnDocument.AFTER
         )
 
-        self._hook_manager.call_hook("submission_done", submission=submission, archive=archive, newsub=newsub)
+        self._plugin_manager.call_hook("submission_done", submission=submission, archive=archive, newsub=newsub)
 
         for username in submission["username"]:
             self._user_manager.update_user_stats(username, task, submission, result[0], grade, state, newsub)
@@ -105,11 +109,8 @@ class WebAppSubmissionManager:
         username = self._user_manager.session_username()
 
         if task.is_group_task() and not self._user_manager.has_staff_rights_on_course(task.get_course(), username):
-            group = self._database.aggregations.find_one(
-                {"courseid": task.get_course_id(), "groups.students": username},
-                {"groups": {"$elemMatch": {"students": username}}})
-
-            obj.update({"username": group["groups"][0]["students"]})
+            group = self._database.groups.find_one({"courseid": task.get_course_id(), "students": username})
+            obj.update({"username": group["students"]})
         else:
             obj.update({"username": [username]})
 
@@ -121,12 +122,22 @@ class WebAppSubmissionManager:
 
             # safety check
             if outcome_result_id is None or outcome_service_url is None:
-                self._logger.error("outcome_result_id or outcome_service_url is None, but grade needs to be sent back to TC! Ignoring.")
+                self._logger.error(
+                    "outcome_result_id or outcome_service_url is None, but grade needs to be sent back to TC! Ignoring.")
                 return
 
             obj.update({"outcome_service_url": outcome_service_url,
                         "outcome_result_id": outcome_result_id,
                         "outcome_consumer_key": outcome_consumer_key})
+
+        # If we are submitting for a group, send the group (user list joined with ",") as username
+        if "group" not in [p.get_id() for p in task.get_problems()]:  # do not overwrite
+            username = self._user_manager.session_username()
+            if task.is_group_task() and not self._user_manager.has_staff_rights_on_course(task.get_course(), username):
+                group = self._database.groups.find_one({"courseid": task.get_course_id(), "students": username})
+                users = self._database.users.find({"username": {"$in": group["students"]}})
+                inputdata["@username"] = ','.join(group["students"])
+                inputdata["@email"] = ','.join([user["email"] for user in users])
 
     def _after_submission_insertion(self, task, inputdata, debug, submission, submissionid):
         """
@@ -137,14 +148,6 @@ class WebAppSubmissionManager:
                 :param submission: the new document that was inserted (do not contain _id)
                 :param submissionid: submission id of the submission
                 """
-        # If we are submitting for a group, send the group (user list joined with ",") as username
-        if "group" not in [p.get_id() for p in task.get_problems()]:  # do not overwrite
-            username = self._user_manager.session_username()
-            if task.is_group_task() and not self._user_manager.has_staff_rights_on_course(task.get_course(), username):
-                group = self._database.aggregations.find_one(
-                    {"courseid": task.get_course_id(), "groups.students": username},
-                    {"groups": {"$elemMatch": {"students": username}}})
-                inputdata["username"] = ','.join(group["groups"][0]["students"])
 
         return self._delete_exceeding_submissions(self._user_manager.session_username(), task)
 
@@ -159,14 +162,14 @@ class WebAppSubmissionManager:
             raise Exception("A user must be logged in to submit an object")
 
         # Don't enable ssh debug
-        ssh_callback = lambda host, port, password: self._handle_ssh_callback(submission["_id"], host, port, password)
+        ssh_callback = lambda host, port, user, password: self._handle_ssh_callback(submission["_id"], host, port, user, password)
 
         # Load input data and add username to dict
         inputdata = bson.BSON.decode(self._gridfs.get(submission["input"]).read())
 
         if not copy:
             submissionid = submission["_id"]
-            username = submission["username"][0] # TODO: this may be inconsistent with add_job
+            username = submission["username"][0]  # TODO: this may be inconsistent with add_job
 
             # Remove the submission archive : it will be regenerated
             if submission.get("archive", None) is not None:
@@ -176,37 +179,50 @@ class WebAppSubmissionManager:
             username = self._user_manager.session_username()
             submission["username"] = [username]
             submission["submitted_on"] = datetime.now()
-            my_user_task = self._database.user_tasks.find_one({"courseid": task.get_course_id(), "taskid": task.get_id(), "username": username}, { "tried" : 1, "_id" : 0 })
+            my_user_task = self._database.user_tasks.find_one(
+                {"courseid": task.get_course_id(), "taskid": task.get_id(), "username": username},
+                {"tried": 1, "_id": 0})
             tried_count = my_user_task["tried"]
             inputdata["@attempts"] = str(tried_count + 1)
             inputdata["@username"] = username
+            inputdata["@email"] = self._user_manager.session_email()
             inputdata["@lang"] = self._user_manager.session_language()
             submission["input"] = self._gridfs.put(bson.BSON.encode(inputdata))
-            submission["tests"] = {} # Be sure tags are reinitialized
-            submissionid = self._database.submissions.insert(submission)
+            submission["tests"] = {}  # Be sure tags are reinitialized
+            submission["user_ip"] = flask.request.remote_addr
+            submissionid = self._database.submissions.insert_one(submission).inserted_id
+
+        # Clean the submission document in db
+        self._database.submissions.update_one(
+            {"_id": submission["_id"]},
+            {"$set": {"status": "waiting", "response_type": task.get_response_type()},
+             "$unset": {"result": "", "grade": "", "text": "", "tests": "", "problems": "", "archive": "", "state": "",
+                        "custom": ""}
+             })
 
         jobid = self._client.new_job(1, task, inputdata,
                                      (lambda result, grade, problems, tests, custom, state, archive, stdout, stderr:
-                                      self._job_done_callback(submissionid, task, result, grade, problems, tests, custom, state, archive, stdout, stderr, copy)),
+                                      self._job_done_callback(submissionid, task, result, grade, problems, tests,
+                                                              custom, state, archive, stdout, stderr, copy)),
                                      "Frontend - {}".format(submission["username"]), debug, ssh_callback)
 
-        # Clean the submission document in db
-        self._database.submissions.update(
-            {"_id": submission["_id"]},
-            {"$set": {"jobid": jobid, "status": "waiting", "response_type": task.get_response_type()},
-             "$unset": {"result": "", "grade": "", "text": "", "tests": "", "problems": "", "archive": "", "state": "", "custom": ""}
-             })
+
+        self._database.submissions.update_one(
+            {"_id": submission["_id"], "status": "waiting"},
+            {"$set": {"jobid": jobid,"last_replay": datetime.now()}}
+        )
 
         if not copy:
             self._logger.info("Replaying submission %s - %s - %s - %s", submission["username"], submission["courseid"],
                               submission["taskid"], submission["_id"])
         else:
-            self._logger.info("Copying submission %s - %s - %s - %s as %s", submission["username"], submission["courseid"],
+            self._logger.info("Copying submission %s - %s - %s - %s as %s", submission["username"],
+                              submission["courseid"],
                               submission["taskid"], submission["_id"], self._user_manager.session_username())
 
-    def get_available_environments(self):
+    def get_available_environments(self) -> Dict[str, List[str]]:
         """:return a list of available environments """
-        return self._client.get_available_containers()
+        return self._client.get_available_environments()
 
     def get_submission(self, submissionid, user_check=True):
         """ Get a submission from the database """
@@ -219,7 +235,7 @@ class WebAppSubmissionManager:
         """
         Add a job in the queue and returns a submission id.
         :param task:  Task instance
-        :type task: inginious.frontend.tasks.WebAppTask
+        :type task: inginious.frontend.tasks.Task
         :param inputdata: the input as a dictionary
         :type inputdata: dict
         :param debug: If debug is true, more debug data will be saved
@@ -247,43 +263,61 @@ class WebAppSubmissionManager:
             "status": "waiting",
             "submitted_on": datetime.now(),
             "username": [username],
-            "response_type": task.get_response_type()
+            "response_type": task.get_response_type(),
+            "user_ip": flask.request.remote_addr
         }
 
         # Send additional data to the client in inputdata. For now, the username and the language. New fields can be added with the
         # new_submission hook
         inputdata["@username"] = username
+        inputdata["@email"] = self._user_manager.session_email()
         inputdata["@lang"] = self._user_manager.session_language()
-        my_user_task = self._database.user_tasks.find_one({"courseid": task.get_course_id(), "taskid": task.get_id(), "username": username}, { "tried" : 1, "_id" : 0 })
+        inputdata["@time"] = str(obj["submitted_on"])
+        my_user_task = self._database.user_tasks.find_one(
+            {"courseid": task.get_course_id(), "taskid": task.get_id(), "username": username}, {"tried": 1, "_id": 0})
         tried_count = my_user_task["tried"]
         inputdata["@attempts"] = str(tried_count + 1)
         # Retrieve input random
-        states = self._database.user_tasks.find_one({"courseid": task.get_course_id(), "taskid": task.get_id(), "username": username}, {"random": 1, "state": 1})
+        states = self._database.user_tasks.find_one(
+            {"courseid": task.get_course_id(), "taskid": task.get_id(), "username": username},
+            {"random": 1, "state": 1})
         inputdata["@random"] = states["random"] if "random" in states else []
         inputdata["@state"] = states["state"] if "state" in states else ""
 
-        self._hook_manager.call_hook("new_submission", submission=obj, inputdata=inputdata)
-        obj["input"] = self._gridfs.put(bson.BSON.encode(inputdata))
+        # Send LTI information to the client except "consumer_key"
+        lti_info = self._user_manager.session_lti_info()
+        if lti_info:
+            for key in lti_info:
+                if key == "consumer_key" or key.startswith("outcome"): # Skip "consumer_key" and "outcome*"
+                    continue
+                self._logger.debug("LTI data : %s, %s",key, lti_info[key])
+                # Add @lti_ prefix
+                key_str = "@lti_" + key
+                inputdata[key_str] = lti_info[key]
+
+        self._plugin_manager.call_hook("new_submission", submission=obj, inputdata=inputdata)
 
         self._before_submission_insertion(task, inputdata, debug, obj)
-        submissionid = self._database.submissions.insert(obj)
+        obj["input"] = self._gridfs.put(bson.BSON.encode(inputdata))
+        submissionid = self._database.submissions.insert_one(obj).inserted_id
         to_remove = self._after_submission_insertion(task, inputdata, debug, obj, submissionid)
 
-        ssh_callback = lambda host, port, password: self._handle_ssh_callback(submissionid, host, port, password)
+        ssh_callback = lambda host, port, user, password: self._handle_ssh_callback(submissionid, host, port, user, password)
 
         jobid = self._client.new_job(0, task, inputdata,
                                      (lambda result, grade, problems, tests, custom, state, archive, stdout, stderr:
-                                      self._job_done_callback(submissionid, task, result, grade, problems, tests, custom, state, archive, stdout, stderr, True)),
+                                      self._job_done_callback(submissionid, task, result, grade, problems, tests,
+                                                              custom, state, archive, stdout, stderr, True)),
                                      "Frontend - {}".format(username), debug, ssh_callback)
 
-        self._database.submissions.update(
+        self._database.submissions.update_one(
             {"_id": submissionid, "status": "waiting"},
             {"$set": {"jobid": jobid}}
         )
 
         self._logger.info("New submission from %s - %s - %s/%s - %s", self._user_manager.session_username(),
                           self._user_manager.session_email(), task.get_course_id(), task.get_id(),
-                          web.ctx['ip'])
+                          flask.request.remote_addr)
 
         return submissionid, to_remove
 
@@ -318,16 +352,6 @@ class WebAppSubmissionManager:
             # Always keep the best submission
             if idx_best != -1:
                 to_keep.add(tasks[idx_best]["_id"])
-        elif task.get_evaluate() == 'student':
-            user_task = self._database.user_tasks.find_one({
-                "courseid": task.get_course_id(),
-                "taskid": task.get_id(),
-                "username": username
-            })
-
-            submissionid = user_task.get('submissionid', None)
-            if submissionid:
-                to_keep.add(submissionid)
 
         # Always keep running submissions
         for val in tasks:
@@ -347,6 +371,10 @@ class WebAppSubmissionManager:
             Get the input of a submission. If only_input is False, returns the full submissions with a dictionnary object at the key "input".
             Else, returns only the dictionnary.
         """
+        # do not recharge if not needed
+        if isinstance(submission["input"], dict):
+            return submission["input"] if only_input else submission
+
         inp = bson.BSON.decode(self._gridfs.get(submission['input']).read())
         if only_input:
             return inp
@@ -354,7 +382,8 @@ class WebAppSubmissionManager:
             submission["input"] = inp
             return submission
 
-    def get_feedback_from_submission(self, submission, only_feedback=False, show_everything=False, translation=gettext.NullTranslations()):
+    def get_feedback_from_submission(self, submission, only_feedback=False, show_everything=False,
+                                     translation=gettext.NullTranslations()):
         """
             Get the input of a submission. If only_input is False, returns the full submissions with a dictionnary object at the key "input".
             Else, returns only the dictionnary.
@@ -364,17 +393,30 @@ class WebAppSubmissionManager:
         if only_feedback:
             submission = {"text": submission.get("text", None), "problems": dict(submission.get("problems", {}))}
         if "text" in submission:
-            submission["text"] = ParsableText(submission["text"], submission["response_type"], show_everything, translation).parse()
+            submission["text"] = ParsableText(submission["text"], submission["response_type"], show_everything,
+                                              translation).parse()
         if "problems" in submission:
             for problem in submission["problems"]:
                 if isinstance(submission["problems"][problem], str):  # fallback for old-style submissions
-                    submission["problems"][problem] = (submission.get('result', 'crash'), ParsableText(submission["problems"][problem],
-                                                                                                       submission["response_type"],
-                                                                                                       show_everything, translation).parse())
+                    submission["problems"][problem] = (
+                    submission.get('result', 'crash'), ParsableText(submission["problems"][problem],
+                                                                    submission["response_type"],
+                                                                    show_everything, translation).parse())
                 else:  # new-style submission
-                    submission["problems"][problem] = (submission["problems"][problem][0], ParsableText(submission["problems"][problem][1],
-                                                                                                        submission["response_type"],
-                                                                                                        show_everything, translation).parse())
+
+                    try:
+                        submission["problems"][problem] = (
+                        submission["problems"][problem][0], ParsableText(submission["problems"][problem][1],
+                                                                     submission["response_type"],
+                                                                     show_everything, translation).parse())
+                    except TypeError:
+                        self._logger.error(
+                            "Something went wrong with provided feedback for submission %s", str(submission["_id"])
+                            )
+                        submission["problems"][problem] = (
+                            'crash', ParsableText(_("Feedback is badly formatted."),
+                                                                    submission["response_type"],
+                                                                    show_everything, translation).parse())
         return submission
 
     def is_running(self, submissionid, user_check=True):
@@ -397,15 +439,18 @@ class WebAppSubmissionManager:
         """ Attempt to kill the remote job associated with this submission id.
         :param submissionid:
         :param user_check: Check if the current user owns this submission
-        :return: True if the job was killed, False if an error occurred
+        :return: True if the message asking to kill the job was sent, False if an error occurred
         """
         submission = self.get_submission(submissionid, user_check)
         if not submission:
+            self._logger.warning("Was asked to kill submission with id %s, but it cannot be found in the database", str(submissionid))
             return False
         if "jobid" not in submission:
+            self._logger.warning("Was asked to kill submission with id %s, but it does not seem to be running", str(submissionid))
             return False
 
-        return self._client.kill_job(submission["jobid"])
+        self._client.kill_job(submission["jobid"])
+        return True
 
     def user_is_submission_owner(self, submission):
         """ Returns true if the current user is the owner of this jobid, false else """
@@ -424,30 +469,30 @@ class WebAppSubmissionManager:
         cursor.sort([("submitted_on", -1)])
         return list(cursor)
 
-    def get_user_last_submissions(self, limit=5, request=None):
+    def get_user_last_submissions(self, limit=5, mongo_request=None):
         """ Get last submissions of a user """
-        if request is None:
-            request = {}
+        if mongo_request is None:
+            mongo_request = {}
 
-        request.update({"username": self._user_manager.session_username()})
+        mongo_request.update({"username": self._user_manager.session_username()})
 
         # Before, submissions were first sorted by submission date, then grouped
         # and then resorted by submission date before limiting. Actually, grouping
         # and pushing, keeping the max date, followed by result filtering is much more
         # efficient
         data = self._database.submissions.aggregate([
-            {"$match": request},
+            {"$match": mongo_request},
             {"$group": {"_id": {"courseid": "$courseid", "taskid": "$taskid"},
                         "submitted_on": {"$max": "$submitted_on"},
                         "submissions": {"$push": {
                             "_id": "$_id",
                             "result": "$result",
-                            "status" : "$status",
+                            "status": "$status",
                             "courseid": "$courseid",
                             "taskid": "$taskid",
                             "submitted_on": "$submitted_on"
                         }},
-            }},
+                        }},
             {"$project": {
                 "submitted_on": 1,
                 "submissions": {
@@ -457,7 +502,8 @@ class WebAppSubmissionManager:
                             "input": "$submissions",
                             "as": "submission",
                             "in": {
-                                "$cond": [{"$eq": ["$submitted_on", "$$submission.submitted_on"]}, "$$submission", False]
+                                "$cond": [{"$eq": ["$submitted_on", "$$submission.submitted_on"]}, "$$submission",
+                                          False]
                             }
                         }},
                         [False]
@@ -474,98 +520,131 @@ class WebAppSubmissionManager:
         """ Returns the GridFS used by the submission manager """
         return self._gridfs
 
-    def get_submission_archive(self, submissions, sub_folders, aggregations, archive_file=None):
+    def get_submission_archive(self, course, submissions, sub_folders, archive_file=None, simplify=False):
         """
+        :param course: the course object linked to the submission
         :param submissions: a list of submissions
-        :param sub_folders: possible values:
-            []: put all submissions in /
-            ['taskid']: put all submissions for each task in a different directory /taskid/
-            ['username']: put all submissions for each user in a different directory /username/
-            ['taskid','username']: /taskid/username/
-            ['username','taskid']: /username/taskid/
+        :param sub_folders: a list of folders in which to place the submission. For example,
+            ["taskid", "submissionid"] place each submission inside a folder taskid/submissionid/ (with taskid replaced
+            with the actual task id, the same being true for submissionid). The possible values are:
+            - "taskid": replaced by the task id
+            - "submissionid": replaced by the submission id
+            - "audience": replaced by the name of the audience "audiencedesc_(audienceid)"
+            - "group": replaced by the list of username who submitted
+            - "username": replaced by the username
+            Some of these (like "username" and "audience") are not unique for a submission. If they are multiple answers
+            possible, the files are duplicated at multiple locations.
+
+            For example: given a submission #9083081 by the group ["a", "b"], and a sub_folders value of
+            ["username", "submissionid"], the archive will contain two folders:
+            - a/9083081/
+            - b/9083081/
         :return: a file-like object containing a tgz archive of all the submissions
         """
+
+        if "audience" in sub_folders:
+            student_audiences = self._user_manager.get_course_audiences_per_student(course)
+
+        def generate_paths(sub, path, remaining_sub_folders):
+            if len(remaining_sub_folders) == 0:
+                yield path
+            elif remaining_sub_folders[0] == "taskid":
+                yield from generate_paths(sub, path + [sub['taskid']], remaining_sub_folders[1:])
+            elif remaining_sub_folders[0] == "username":
+                for username in sub["username"]:
+                    yield from generate_paths(sub, path + [username], remaining_sub_folders[1:])
+            elif remaining_sub_folders[0] == "audience":
+                for username in sub["username"]:
+                    if username in student_audiences:
+                        for audience in student_audiences[username]:
+                            yield from generate_paths(sub, path +
+                                                      [(audience["description"] +" (" + str(audience["_id"]) + ")").replace(" ", "_")],
+                                                      remaining_sub_folders[1:])
+                    else:
+                        yield from generate_paths(sub, path + ['-'.join(sorted(sub['username']))], remaining_sub_folders[1:])
+            elif remaining_sub_folders[0] == "group":
+                yield from generate_paths(sub, path + ['-'.join(sorted(sub['username']))], remaining_sub_folders[1:])
+            elif remaining_sub_folders[0] == "submissionid":
+                yield from generate_paths(sub, path + [str(sub['_id'])], remaining_sub_folders[1:])
+            elif remaining_sub_folders[0] == "submissiondateid":
+                yield from generate_paths(sub, path + [(sub['submitted_on']).strftime("%Y-%m-%d-%H:%M:%S")], remaining_sub_folders[1:])
+            else:
+                yield from generate_paths(sub, path + [remaining_sub_folders[0]], remaining_sub_folders[1:])
+
+        file_to_put = {}
+        for submission in submissions:
+            # generate all paths where the submission must belong
+            for base_path in generate_paths(submission, [], sub_folders):
+                base_path = "/".join(base_path)
+                path, i = base_path, 1
+                while path in file_to_put:
+                    path = base_path + "-" + str(i)
+                    i += 1
+                file_to_put[path] = submission
+
         tmpfile = archive_file if archive_file is not None else tempfile.TemporaryFile()
         tar = tarfile.open(fileobj=tmpfile, mode='w:gz')
         error = ""
 
-        for submission in submissions:
+        # NOTE there is a bit of redundancy here: if a submission is in multiple folder, the file will be reprocessed
+        # each time. Not sure optimizing this is necessary.
+        for base_path, submission in file_to_put.items():
             try:
                 submission = self.get_input_from_submission(submission)
                 submission_yaml = io.BytesIO(inginious.common.custom_yaml.dump(submission).encode('utf-8'))
+                submission_yaml_fname = base_path + '/submission.test'
 
-                # Considering multiple single submissions for each user
-                for username in submission["username"]:
-                    # Compute base path in the tar file
-                    base_path = "/"
-                    for sub_folder in sub_folders:
-                        if sub_folder == 'taskid':
-                            base_path = submission['taskid'] + base_path
-                        elif sub_folder == 'username':
-                            base_path = '_' + '-'.join(submission['username']) + base_path
-                            base_path = base_path[1:]
-                        elif sub_folder == 'aggregation':
-                            if username in aggregations:
-                                if aggregations[username] is None:
-                                    # If classrooms are not used, and user is not grouped, his classroom is replaced by None
-                                    base_path = '_' + '-'.join(submission['username']) + base_path
-                                    base_path = base_path[1:]
+                # Avoid putting two times the same submission on the same place
+                if submission_yaml_fname not in tar.getnames():
+
+                    info = tarfile.TarInfo(name=submission_yaml_fname)
+                    info.size = submission_yaml.getbuffer().nbytes
+                    info.mtime = time.mktime(submission["submitted_on"].timetuple())
+
+                    # Add file in tar archive
+                    tar.addfile(info, fileobj=submission_yaml)
+
+                    # If there is an archive, add it too
+                    if 'archive' in submission and submission['archive'] is not None and submission['archive'] != "":
+                        subfile = self._gridfs.get(submission['archive'])
+                        subtar = tarfile.open(fileobj=subfile, mode="r:gz")
+
+                        for member in subtar.getmembers():
+                            subtarfile = subtar.extractfile(member)
+                            member.name = base_path + "/archive/" + member.name
+                            tar.addfile(member, subtarfile)
+
+                        subtar.close()
+                        subfile.close()
+
+                    # If there files that were uploaded by the student, add them
+                    if submission['input'] is not None:
+                        for pid, problem in submission['input'].items():
+                            if isinstance(problem, dict) and "filename" in problem:
+                                # Get the extension (match extensions with more than one dot too)
+                                DOUBLE_EXTENSIONS = ['.tar.gz', '.tar.bz2', '.tar.bz', '.tar.xz']
+                                ext = ""
+                                if not problem['filename'].endswith(tuple(DOUBLE_EXTENSIONS)):
+                                    _, ext = os.path.splitext(problem['filename'])
                                 else:
-                                    base_path = (aggregations[username]["description"] +
-                                                 " (" + str(aggregations[username]["_id"]) + ")").replace(" ", "_") + base_path
+                                    for t_ext in DOUBLE_EXTENSIONS:
+                                        if problem['filename'].endswith(t_ext):
+                                            ext = t_ext
 
-                        base_path = '/' + base_path
-                    base_path = base_path[1:]
+                                subfile = io.BytesIO(problem['value'])
+                                if simplify and (pid + ext) != "submission.test":
+                                    taskfname = base_path + '/' + pid + ext
+                                else:
+                                    taskfname = base_path + '/uploaded_files/' + pid + ext
 
-                    submission_yaml_fname = base_path + str(submission["_id"]) + '/submission.test'
+                                # Generate file info
+                                info = tarfile.TarInfo(name=taskfname)
+                                info.size = subfile.getbuffer().nbytes
+                                info.mtime = time.mktime(submission["submitted_on"].timetuple())
 
-                    # Avoid putting two times the same submission on the same place
-                    if submission_yaml_fname not in tar.getnames():
+                                # Add file in tar archive
+                                tar.addfile(info, fileobj=subfile)
 
-                        info = tarfile.TarInfo(name=submission_yaml_fname)
-                        info.size = submission_yaml.getbuffer().nbytes
-                        info.mtime = time.mktime(submission["submitted_on"].timetuple())
-
-                        # Add file in tar archive
-                        tar.addfile(info, fileobj=submission_yaml)
-
-                        # If there is an archive, add it too
-                        if 'archive' in submission and submission['archive'] is not None and submission['archive'] != "":
-                            subfile = self._gridfs.get(submission['archive'])
-                            subtar = tarfile.open(fileobj=subfile, mode="r:gz")
-
-                            for member in subtar.getmembers():
-                                subtarfile = subtar.extractfile(member)
-                                member.name = base_path + str(submission["_id"]) + "/archive/" + member.name
-                                tar.addfile(member, subtarfile)
-
-                            subtar.close()
-                            subfile.close()
-
-                        # If there files that were uploaded by the student, add them
-                        if submission['input'] is not None:
-                            for pid, problem in submission['input'].items():
-                                if isinstance(problem, dict) and "filename" in problem:
-                                    # Get the extension (match extensions with more than one dot too)
-                                    DOUBLE_EXTENSIONS = ['.tar.gz', '.tar.bz2', '.tar.bz', '.tar.xz']
-                                    ext = ""
-                                    if not problem['filename'].endswith(tuple(DOUBLE_EXTENSIONS)):
-                                        _, ext = os.path.splitext(problem['filename'])
-                                    else:
-                                        for t_ext in DOUBLE_EXTENSIONS:
-                                            if problem['filename'].endswith(t_ext):
-                                                ext = t_ext
-
-                                    subfile = io.BytesIO(problem['value'])
-                                    taskfname = base_path + str(submission["_id"]) + '/uploaded_files/' + pid + ext
-
-                                    # Generate file info
-                                    info = tarfile.TarInfo(name=taskfname)
-                                    info.size = subfile.getbuffer().nbytes
-                                    info.mtime = time.mktime(submission["submitted_on"].timetuple())
-
-                                    # Add file in tar archive
-                                    tar.addfile(info, fileobj=subfile)
             except Exception as e:
                 error = str(submission["_id"])
                 break
@@ -575,48 +654,54 @@ class WebAppSubmissionManager:
         tmpfile.seek(0)
         return tmpfile, error
 
-    def _handle_ssh_callback(self, submission_id, host, port, password):
+    def _handle_ssh_callback(self, submission_id, host, port, user, password):
         """ Handles the creation of a remote ssh server """
         if host is not None:  # ignore late calls (a bit hacky, but...)
             obj = {
                 "ssh_host": host,
                 "ssh_port": port,
+                "ssh_user": user,
                 "ssh_password": password
             }
             self._database.submissions.update_one({"_id": submission_id}, {"$set": obj})
 
     def get_job_queue_snapshot(self):
         """ Get a snapshot of the remote backend job queue. May be a cached version.
-            May not contain recent jobs. May return None if no snapshot is available
+        May not contain recent jobs. May return None if no snapshot is available
 
-        Return a tuple of two lists (None, None):
-        jobs_running: a list of tuples in the form
-            (job_id, is_current_client_job, info, launcher, started_at, max_end)
-            where
+        :return: a tuple of two lists (None, None):
+
+        - ``jobs_running`` : a list of tuples in the form
+          (job_id, is_current_client_job, info, launcher, started_at, max_time)
+          where
+
             - job_id is a job id. It may be from another client.
             - is_current_client_job is a boolean indicating if the client that asked the request has started the job
             - agent_name is the agent name
             - info is "courseid/taskid"
             - launcher is the name of the launcher, which may be anything
             - started_at the time (in seconds since UNIX epoch) at which the job started
-            - max_end the time at which the job will timeout (in seconds since UNIX epoch), or -1 if no timeout is set
-        jobs_waiting: a list of tuples in the form
-            (job_id, is_current_client_job, info, launcher, max_time)
-            where
+            - max_time the maximum time that can be used, or -1 if no timeout is set
+
+        - ``jobs_waiting`` : a list of tuples in the form
+          (job_id, is_current_client_job, info, launcher, max_time)
+          where
+
             - job_id is a job id. It may be from another client.
             - is_current_client_job is a boolean indicating if the client that asked the request has started the job
             - info is "courseid/taskid"
             - launcher is the name of the launcher, which may be anything
             - max_time the maximum time that can be used, or -1 if no timeout is set
+
         """
         return self._client.get_job_queue_snapshot()
 
     def get_job_queue_info(self, jobid):
-        """
-        :param jobid: the JOB id (not the submission id!). You should retrieve it before calling this function by calling get_submission(...)[
-        "job_id"].
-        :return: If the submission is in the queue, then returns a tuple (nb tasks before running (or -1 if running), approx wait time in seconds)
-                 Else, returns None
+        """Get job queue info
+        :param jobid: the JOB id (not the submission id!). You should retrieve it before calling this function by
+        calling ``get_submission(...)["job_id"]``.
+        :return: If the submission is in the queue, then returns a tuple (nb tasks before running (or ``-1`` if running), approx wait time in seconds)
+        Else, returns None
         """
         return self._client.get_job_queue_info(jobid)
 
@@ -625,6 +710,6 @@ def update_pending_jobs(database):
     """ Updates pending jobs status in the database """
 
     # Updates the submissions that are waiting with the status error, as the server restarted
-    database.submissions.update({'status': 'waiting'},
+    database.submissions.update_many({'status': 'waiting'},
                                 {"$unset": {'jobid': ""},
-                                 "$set": {'status': 'error', 'grade': 0.0, 'text': 'Internal error. Server restarted'}}, multi=True)
+                                 "$set": {'status': 'error', 'grade': 0.0, 'text': 'Internal error. Server restarted'}})

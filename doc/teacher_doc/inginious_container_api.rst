@@ -1,4 +1,5 @@
 .. _inginious_container_api:
+
 The inginious_container_api package (commands inside containers)
 ================================================================
 
@@ -30,6 +31,12 @@ Running subcontainers
     :undoc-members:
     :show-inheritance:
 
+
+.. automodule:: inginious_container_api.ssh_student
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
 RST helpers
 -----------
 
@@ -45,3 +52,4 @@ Language management
     :members:
     :undoc-members:
     :show-inheritance:
+

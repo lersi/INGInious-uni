@@ -5,10 +5,13 @@
 
 """ Tools to parse text """
 import html
+import re
 import gettext
-from datetime import datetime
-
+import flask
 import tidylib
+
+from datetime import datetime
+from urllib.parse import urlparse
 from docutils import core, nodes
 from docutils.parsers.rst import directives, Directive
 from docutils.parsers.rst.directives.admonitions import BaseAdmonition
@@ -17,15 +20,13 @@ from docutils.statemachine import StringList
 from docutils.writers import html4css1
 
 from inginious.frontend.accessible_time import parse_date
-import web
 
 
 def _get_inginious_translation():
-    try:
-        # If we are on a webpage, or even anywhere in the app, this should be defined
-        return web.ctx.app_stack[0].get_translation_obj()
-    except:
-        # If this is not the case, then, no translation for you!
+    # If we are on a webpage, or even anywhere in the app, this should be defined
+    if flask.has_app_context():
+        return flask.current_app.l10n_manager.get_translation_obj()
+    else:
         return gettext.NullTranslations()
 
 
@@ -148,7 +149,20 @@ class _CustomHTMLWriter(html4css1.Writer, object):
             """ Ensures all links to outside this instance of INGInious have target='_blank' """
             if tagname == 'a' and "href" in attributes and not attributes["href"].startswith('#'):
                 attributes["target"] = "_blank"
+            # Rewrite paths if we are in LTI mode
+            # TODO: this should be an argument passed through all the functions
+            if re.match(r"^(/@[a-f0-9A-F_]*@)", flask.request.path if flask.has_app_context() else ""):
+                if tagname == 'a' and 'href' in attributes:
+                    attributes['href'] = self.rewrite_lti_url(attributes['href'])
+                elif tagname == 'img' and 'src' in attributes:
+                    attributes['src'] = self.rewrite_lti_url(attributes['src'])
             return html4css1.HTMLTranslator.starttag(self, node, tagname, suffix, empty, **attributes)
+
+        @staticmethod
+        def rewrite_lti_url(url):
+            if urlparse(url).netloc: # If URL is absolute, don't do anything
+                return url
+            return 'asset/' + url
 
         def visit_table(self, node):
             """ Remove needless borders """
@@ -285,7 +299,8 @@ class ParsableText(object):
             'translation': translation,
             'raw_enabled': True,
             'file_insertion_enabled': False,
-            'math_output': 'MathJax /this/does/not/need/to/exist.js'
+            'math_output': 'MathJax /this/does/not/need/to/exist.js',
+            'line_length_limit': len(string)  # Use string size to be safe.
         }
         if debug:
             overrides['halt_level'] = 2

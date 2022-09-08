@@ -1,3 +1,5 @@
+.. _inginious.frontend:
+
 inginious.frontend package
 ==========================
 
@@ -42,20 +44,22 @@ inginious.frontend.app module
     :undoc-members:
     :show-inheritance:
 
-.. _inginious.frontend.courses.WebAppCourse:
+.. _inginious.frontend.course_factory:
+
+inginious.frontend.course_factory module
+-------------------------------------------
+
+.. automodule:: inginious.frontend.course_factory
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+.. _inginious.frontend.courses.Course:
 
 inginious.frontend.courses module
 ----------------------------------------
 
 .. automodule:: inginious.frontend.courses
-    :members:
-    :undoc-members:
-    :show-inheritance:
-
-inginious.frontend.database_updater module
--------------------------------------------------
-
-.. automodule:: inginious.frontend.database_updater
     :members:
     :undoc-members:
     :show-inheritance:
@@ -86,35 +90,10 @@ inginious.frontend.plugin_manager module
     :undoc-members:
     :show-inheritance:
 
-inginious.frontend.session_mongodb module
-------------------------------------------------
-
-.. automodule:: inginious.frontend.session_mongodb
-    :members:
-    :undoc-members:
-    :show-inheritance:
-
-inginious.frontend.static_middleware module
---------------------------------------------------
-
-.. automodule:: inginious.frontend.static_middleware
-    :members:
-    :undoc-members:
-    :show-inheritance:
-
-
 inginious.frontend.submission_manager module
 ---------------------------------------------------
 
 .. automodule:: inginious.frontend.submission_manager
-    :members:
-    :undoc-members:
-    :show-inheritance:
-
-inginious.frontend.task_page_helpers module
---------------------------------------------------
-
-.. automodule:: inginious.frontend.task_page_helpers
     :members:
     :undoc-members:
     :show-inheritance:
@@ -127,20 +106,20 @@ inginious.frontend.task_problems module
     :undoc-members:
     :show-inheritance:
 
-.. _inginious.frontend.tasks.WebAppTask:
+inginious.frontend.task_factory module
+--------------------------------------------
+
+.. automodule:: inginious.frontend.task_factory
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+.. _inginious.frontend.tasks.Task:
 
 inginious.frontend.tasks module
 --------------------------------------
 
 .. automodule:: inginious.frontend.tasks
-    :members:
-    :undoc-members:
-    :show-inheritance:
-
-inginious.frontend.tasks_code_boxes module
--------------------------------------------------
-
-.. automodule:: inginious.frontend.tasks_code_boxes
     :members:
     :undoc-members:
     :show-inheritance:

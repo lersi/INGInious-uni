@@ -10,10 +10,14 @@ from inginious.frontend.pages.api._api_page import APIAuthenticatedPage, APINotF
 
 class APICourses(APIAuthenticatedPage):
     r"""
-        Endpoint /api/v0/courses(/[a-zA-Z_\-\.0-9]+)?
+        Endpoint
+          ::
+
+            /api/v0/courses(/[a-zA-Z_\-\.0-9]+)?
+
     """
 
-    def API_GET(self, courseid=None):  # pylint: disable=arguments-differ
+    def API_GET(self, courseid):  # pylint: disable=arguments-differ
         """
             List courses available to the connected client. Returns a dict in the form
 
@@ -49,7 +53,7 @@ class APICourses(APIAuthenticatedPage):
                 raise APINotFound("Course not found")
 
         username = self.user_manager.session_username()
-        user_info = self.database.users.find_one({"username": username})
+        user_info = self.user_manager.get_user_info(username)
 
         for courseid, course in courses.items():
             if self.user_manager.course_is_open_to_user(course, username, False) or course.is_registration_possible(user_info):

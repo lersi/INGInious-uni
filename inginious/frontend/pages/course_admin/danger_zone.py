@@ -3,24 +3,25 @@
 # This file is part of INGInious. See the LICENSE and the COPYRIGHTS files for
 # more information about the licensing of this file.
 
-
-
 import datetime
 import glob
-import hashlib
 import logging
 import os
 import random
 import zipfile
 
 import bson.json_util
-import web
+import flask
+from flask import redirect, Response
+from werkzeug.exceptions import NotFound
+
 
 from inginious.frontend.pages.course_admin.utils import INGIniousAdminPage
+from inginious.frontend.user_manager import UserManager
 
 
 class CourseDangerZonePage(INGIniousAdminPage):
-    """ Course administration page: list of classrooms """
+    """ Course administration page: list of audiences """
     _logger = logging.getLogger("inginious.webapp.danger_zone")
 
     def wipe_course(self, courseid):
@@ -31,9 +32,11 @@ class CourseDangerZonePage(INGIniousAdminPage):
                 if key in submission and type(submission[key]) == bson.objectid.ObjectId and gridfs.exists(submission[key]):
                     gridfs.delete(submission[key])
 
-        self.database.aggregations.remove({"courseid": courseid})
-        self.database.user_tasks.remove({"courseid": courseid})
-        self.database.submissions.remove({"courseid": courseid})
+        self.database.courses.update_one({"_id": courseid}, {"$set": {"students": []}})
+        self.database.audiences.delete_many({"courseid": courseid})
+        self.database.groups.delete_many({"courseid": courseid})
+        self.database.user_tasks.delete_many({"courseid": courseid})
+        self.database.submissions.delete_many({"courseid": courseid})
 
         self._logger.info("Course %s wiped.", courseid)
 
@@ -45,13 +48,21 @@ class CourseDangerZonePage(INGIniousAdminPage):
             os.makedirs(os.path.dirname(filepath))
 
         with zipfile.ZipFile(filepath, "w", allowZip64=True) as zipf:
-            aggregations = self.database.aggregations.find({"courseid": courseid})
-            zipf.writestr("aggregations.json", bson.json_util.dumps(aggregations), zipfile.ZIP_DEFLATED)
+            course_obj = self.database.courses.find_one({"_id": courseid})
+            students = course_obj.get("students", []) if course_obj else []
+            zipf.writestr("students.json", bson.json_util.dumps(students), zipfile.ZIP_DEFLATED)
+
+            audiences = self.database.audiences.find({"courseid": courseid})
+            zipf.writestr("audiences.json", bson.json_util.dumps(audiences), zipfile.ZIP_DEFLATED)
+
+            groups = self.database.groups.find({"courseid": courseid})
+            zipf.writestr("groups.json", bson.json_util.dumps(groups), zipfile.ZIP_DEFLATED)
 
             user_tasks = self.database.user_tasks.find({"courseid": courseid})
             zipf.writestr("user_tasks.json", bson.json_util.dumps(user_tasks), zipfile.ZIP_DEFLATED)
 
-            submissions = self.database.submissions.find({"courseid": courseid})
+            # Fetching input data  while looping on submissions can trigger a mongo cursor timeout
+            submissions = self.database.submissions.find({"courseid": courseid}, no_cursor_timeout=True)
             erroneous_subs = set()
 
             for submission in submissions:
@@ -79,13 +90,21 @@ class CourseDangerZonePage(INGIniousAdminPage):
         filepath = os.path.join(self.backup_dir, courseid, backup + ".zip")
         with zipfile.ZipFile(filepath, "r") as zipf:
 
-            aggregations = bson.json_util.loads(zipf.read("aggregations.json").decode("utf-8"))
-            if len(aggregations) > 0:
-                self.database.aggregations.insert(aggregations)
+            students = bson.json_util.loads(zipf.read("students.json").decode("utf-8"))
+            if len(students) > 0:
+                self.database.courses.update_one({"_id": courseid}, {"$set": {"students": students}}, upsert=True)
+
+            audiences = bson.json_util.loads(zipf.read("audiences.json").decode("utf-8"))
+            if len(audiences) > 0:
+                self.database.audiences.insert_many(audiences)
+
+            groups = bson.json_util.loads(zipf.read("groups.json").decode("utf-8"))
+            if len(groups) > 0:
+                self.database.groups.insert_many(groups)
 
             user_tasks = bson.json_util.loads(zipf.read("user_tasks.json").decode("utf-8"))
             if len(user_tasks) > 0:
-                self.database.user_tasks.insert(user_tasks)
+                self.database.user_tasks.insert_many(user_tasks)
 
             submissions = bson.json_util.loads(zipf.read("submissions.json").decode("utf-8"))
             for submission in submissions:
@@ -94,7 +113,7 @@ class CourseDangerZonePage(INGIniousAdminPage):
                         submission[key] = self.submission_manager.get_gridfs().put(zipf.read(key + "/" + str(submission[key]) + ".data"))
 
             if len(submissions) > 0:
-                self.database.submissions.insert(submissions)
+                self.database.submissions.insert_many(submissions)
 
         self._logger.info("Course %s restored from backup directory.", courseid)
 
@@ -118,18 +137,17 @@ class CourseDangerZonePage(INGIniousAdminPage):
         """ GET request """
         course, __ = self.get_course_and_check_rights(courseid, allow_all_staff=False)
 
-        data = web.input()
+        data = flask.request.args
 
         if "download" in data:
             filepath = os.path.join(self.backup_dir, courseid, data["download"] + '.zip')
 
             if not os.path.exists(os.path.dirname(filepath)):
-                raise web.notfound()
+                raise NotFound(description=_("This file doesn't exist."))
 
-            web.header('Content-Type', 'application/zip', unique=True)
-            web.header('Content-Disposition', 'attachment; filename="' + data["download"] + '.zip' + '"', unique=True)
-
-            return open(filepath, 'rb')
+            response = Response(response=open(filepath, 'rb'), content_type='application/zip')
+            response.headers['Content-Disposition'] = 'attachment; filename="{}.zip"'.format(data["download"])
+            return response
 
         else:
             return self.page(course)
@@ -141,7 +159,7 @@ class CourseDangerZonePage(INGIniousAdminPage):
         msg = ""
         error = False
 
-        data = web.input()
+        data = flask.request.form
         if not data.get("token", "") == self.user_manager.session_token():
             msg = _("Operation aborted due to invalid token.")
             error = True
@@ -153,8 +171,8 @@ class CourseDangerZonePage(INGIniousAdminPage):
                 try:
                     self.dump_course(courseid)
                     msg = _("All course data have been deleted.")
-                except:
-                    msg = _("An error occurred while dumping course from database.")
+                except Exception as ex:
+                    msg = _("An error occurred while dumping course from database: {}").format(repr(ex))
                     error = True
         elif "restore" in data:
             if "backupdate" not in data:
@@ -165,8 +183,8 @@ class CourseDangerZonePage(INGIniousAdminPage):
                     dt = datetime.datetime.strptime(data["backupdate"], "%Y%m%d.%H%M%S")
                     self.restore_course(courseid, data["backupdate"])
                     msg = _("Course restored to date : {}.").format(dt.strftime("%Y-%m-%d %H:%M:%S"))
-                except:
-                    msg = _("An error occurred while restoring backup.")
+                except Exception as ex:
+                    msg = _("An error occurred while restoring backup: {}").format(repr(ex))
                     error = True
         elif "deleteall" in data:
             if not data.get("courseid", "") == courseid:
@@ -175,9 +193,9 @@ class CourseDangerZonePage(INGIniousAdminPage):
             else:
                 try:
                     self.delete_course(courseid)
-                    web.seeother(self.app.get_homepath() + '/index')
-                except:
-                    msg = _("An error occurred while deleting the course data.")
+                    return redirect(self.app.get_homepath() + '/index')
+                except Exception as ex:
+                    msg = _("An error occurred while deleting the course data: {}").format(repr(ex))
                     error = True
 
         return self.page(course, msg, error)
@@ -199,9 +217,10 @@ class CourseDangerZonePage(INGIniousAdminPage):
 
     def page(self, course, msg="", error=False):
         """ Get all data and display the page """
-        thehash = hashlib.sha512(str(random.getrandbits(256)).encode("utf-8")).hexdigest()
+        thehash = UserManager.hash_password(str(random.getrandbits(256)))
         self.user_manager.set_session_token(thehash)
 
         backups = self.get_backup_list(course)
 
-        return self.template_helper.get_renderer().course_admin.danger_zone(course, thehash, backups, msg, error)
+        return self.template_helper.render("course_admin/danger_zone.html", course=course, thehash=thehash,
+                                           backups=backups, msg=msg, error=error)

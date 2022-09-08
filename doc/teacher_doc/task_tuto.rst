@@ -5,8 +5,9 @@ In this document we will describe how to create a simple task, that checks that 
 
 .. note::
 
-    Demonstration tasks are made available for download `here <https://github.com/UCL-INGI/INGInious-demo-tasks>`_. They
-    can also be downloaded and installed automatically via the :ref:`inginious-install` script.
+    Demonstration tasks are made available for download on the `INGInious-demo-tasks repository <https://github.com/UCL-INGI/INGInious-demo-tasks>`_. They
+    can also be downloaded and installed automatically via the :ref:`inginious-install` script. You can also download courses examples on the marketplace page which allows to easily import courses files. The list of these open source courses is also available on the `INGInious-courses repository <https://github.com/UCL-INGI/INGInious-courses>`_
+	
 
 Creating the task description
 -----------------------------
@@ -60,7 +61,7 @@ Most of the fields are self-explanatory. Some remarks:
   those you downloaded during installation or those you created by creating a grading container.
   Please see :doc:`create_container`.
 
-More documentation is available here: :doc:`create_task`.
+More documentation is available here: :doc:`task_file`.
 
 Creating the run file
 ---------------------
@@ -75,6 +76,7 @@ in the webapp in the *Task files* tab of the *Edit task* page.
            @    @question1@@
 
            func()
+
    The syntax is very simple: put a first ``@`` on the line where you want to put the code of the student.
    Then indent the line and write a second ``@``. Now write the problem id of the problem you want to take the input
    from (``question1``) then write another ``@``, write a possible suffix (not used here), and then finish the line
@@ -84,6 +86,7 @@ in the webapp in the *Task files* tab of the *Edit task* page.
    a *bash* script, that parses the template and verifies its content.
 
    .. code-block:: python
+
         # This line parses the template and put the result in studentcode.py
         parse_template("template.py", "student/studentcode.py")
 
@@ -113,4 +116,4 @@ in the webapp in the *Task files* tab of the *Edit task* page.
       $ chmod +x helloworld/run
 
 
-More documentation is available here: :ref:`run_file`.
+More documentation is available here: :doc:`task_file`.

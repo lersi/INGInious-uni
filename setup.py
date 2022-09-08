@@ -5,20 +5,15 @@
 # more information about the licensing of this file.
 
 import sys
-
 import os
 from setuptools import setup, find_packages
-
-import inginious
-
-on_rtd = os.environ.get('READTHEDOCS', None) == 'True'
 
 install_requires = [
     "docker>=2.5.0",
     "docutils>=0.14",
-    "pymongo>=3.2.2,<4",
+    "pymongo>=3.2.2",
     "PyYAML>=3.11",
-    "web.py==0.62",
+    "Jinja2 >= 2.10",
     "lti>=0.9.0",
     "oauth2>=1.9.0.post1",
     "httplib2>=0.9",
@@ -28,27 +23,29 @@ install_requires = [
     "natsort >= 5.0.1",
     "psutil >= 4.4.2",
     "zipstream >= 1.1.4",
-    "WsgiDAV == 2.2.4"
+    "WsgiDAV >= 3.0.0",
+    "Werkzeug >= 1.0.0",
+    "itsdangerous >= 1.1.0",
+    "Flask >= 1.1.0",
+    "Flask-Mail >= 0.9.1",
+    "importlib_metadata >= 3.7.0",
+    'dataclasses >= 0.8; python_version < "3.7.0"',
+    "pytidylib>=0.2.4",
+    "sphinx-autodoc-typehints>=1.12.0",
 ]
 
 test_requires = [
-    "selenium",
+    "selenium == 3.141.0",
     "nose",
     "pyvirtualdisplay"
 ]
 
 doc_requires = [
-    "sphinx-tabs == 1.1.13",
-    "ipython >= 7.6.1"
+    "sphinx==4.5.0",
+    "sphinx_rtd_theme==1.0.0",
+    "sphinx-tabs==3.3.1",
+    "ipython==8.2.0"
 ]
-
-# Platform specific dependencies
-if not on_rtd:
-    doc_requires += ["sphinx-rtd-theme>=0.1.8"]
-    install_requires += ["pytidylib>=0.2.4"]
-
-if on_rtd:
-    install_requires += test_requires + doc_requires
 
 if sys.platform == 'win32':
     install_requires += ["pbs>=0.110"]
@@ -58,9 +55,10 @@ else:
 # Setup
 setup(
     name="INGInious",
-    version=inginious.__version__,
+    use_scm_version=True,
     description="An intelligent grader that allows secured and automated testing of code made by students.",
     packages=find_packages(),
+    setup_requires=['setuptools_scm'],
     install_requires=install_requires,
     tests_require=test_requires,
     extras_require={
@@ -69,7 +67,7 @@ setup(
         "saml2": ["python3-saml"],
         "uwsgi": ["uwsgi"],
         "test": test_requires,
-        "doc": doc_requires
+        "doc": test_requires + doc_requires
     },
 
     scripts=[

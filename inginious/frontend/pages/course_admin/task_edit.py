@@ -4,24 +4,25 @@
 # more information about the licensing of this file.
 
 """ Pages that allow editing of tasks """
-import copy
 import json
 import logging
-import re
 import tempfile
+import bson
+
+import flask
 from collections import OrderedDict
 from zipfile import ZipFile
-from natsort import natsorted
+from flask import redirect
+from werkzeug.exceptions import NotFound
 
-import bson
-import web
+from inginious.frontend.tasks import _migrate_from_v_0_6
 from inginious.frontend.accessible_time import AccessibleTime
 from inginious.frontend.pages.course_admin.utils import INGIniousAdminPage
 
-from inginious.common.base import dict_from_prefix
-from inginious.common.base import id_checker
+from inginious.common.base import dict_from_prefix, id_checker
+from inginious.common.exceptions import TaskNotFoundException
 from inginious.frontend.pages.course_admin.task_edit_file import CourseTaskFiles
-from inginious.frontend.tasks import WebAppTask
+from inginious.frontend.tasks import Task
 
 
 class CourseEditTask(INGIniousAdminPage):
@@ -31,18 +32,20 @@ class CourseEditTask(INGIniousAdminPage):
     def GET_AUTH(self, courseid, taskid):  # pylint: disable=arguments-differ
         """ Edit a task """
         if not id_checker(taskid):
-            raise Exception("Invalid task id")
+            raise NotFound(description=_("Invalid task id"))
 
         course, __ = self.get_course_and_check_rights(courseid, allow_all_staff=False)
 
         try:
             task_data = self.task_factory.get_task_descriptor_content(courseid, taskid)
-        except:
-            task_data = None
-        if task_data is None:
-            task_data = {}
+        except TaskNotFoundException:
+            raise NotFound()
 
-        environments = self.containers
+        # Ensure retrocompatibility
+        task_data = _migrate_from_v_0_6(task_data)
+
+        environment_types = self.environment_types
+        environments = self.environments
 
         current_filetype = None
         try:
@@ -54,20 +57,15 @@ class CourseEditTask(INGIniousAdminPage):
         additional_tabs = self.plugin_manager.call_hook('task_editor_tab', course=course, taskid=taskid,
                                                         task_data=task_data, template_helper=self.template_helper)
 
-        return self.template_helper.get_renderer().course_admin.task_edit(
-            course,
-            taskid,
-            self.task_factory.get_problem_types(),
-            task_data,
-            environments,
-            task_data.get('problems',{}),
-            self.contains_is_html(task_data),
-            current_filetype,
-            available_filetypes,
-            AccessibleTime,
-            CourseTaskFiles.get_task_filelist(self.task_factory, courseid, taskid),
-            additional_tabs
-        )
+        return self.template_helper.render("course_admin/task_edit.html", course=course, taskid=taskid,
+                                           problem_types=self.task_factory.get_problem_types(), task_data=task_data,
+                                           environment_types=environment_types, environments=environments,
+                                           problemdata=json.dumps(task_data.get('problems', {})),
+                                           contains_is_html=self.contains_is_html(task_data),
+                                           current_filetype=current_filetype,
+                                           available_filetypes=available_filetypes, AccessibleTime=AccessibleTime,
+                                           file_list=CourseTaskFiles.get_task_filelist(self.task_factory, courseid, taskid),
+                                           additional_tabs=additional_tabs)
 
     @classmethod
     def contains_is_html(cls, data):
@@ -92,43 +90,51 @@ class CourseEditTask(INGIniousAdminPage):
                 if key in submission and type(submission[key]) == bson.objectid.ObjectId:
                     self.submission_manager.get_gridfs().delete(submission[key])
 
-        self.database.aggregations.remove({"courseid": courseid, "taskid": taskid})
-        self.database.user_tasks.remove({"courseid": courseid, "taskid": taskid})
-        self.database.submissions.remove({"courseid": courseid, "taskid": taskid})
+        self.database.user_tasks.delete_many({"courseid": courseid, "taskid": taskid})
+        self.database.submissions.delete_many({"courseid": courseid, "taskid": taskid})
 
         self._logger.info("Task %s/%s wiped.", courseid, taskid)
 
     def POST_AUTH(self, courseid, taskid):  # pylint: disable=arguments-differ
         """ Edit a task """
         if not id_checker(taskid) or not id_checker(courseid):
-            raise Exception("Invalid course/task id")
+            raise NotFound(description=_("Invalid course/task id"))
 
         course, __ = self.get_course_and_check_rights(courseid, allow_all_staff=False)
-        data = web.input(task_file={})
+        data = flask.request.form.copy()
+        data["task_file"] = flask.request.files.get("task_file")
 
         # Delete task ?
         if "delete" in data:
+            toc = course.get_task_dispenser().get_dispenser_data()
+            toc.remove_task(taskid)
+            self.course_factory.update_course_descriptor_element(courseid, 'toc', toc.to_structure())
             self.task_factory.delete_task(courseid, taskid)
             if data.get("wipe", False):
                 self.wipe_task(courseid, taskid)
-            raise web.seeother(self.app.get_homepath() + "/admin/"+courseid+"/tasks")
+            return  redirect(self.app.get_homepath() + "/admin/"+courseid+"/tasks")
 
         # Else, parse content
         try:
             try:
-                task_zip = data.get("task_file").file
+                task_zip = data.get("task_file").read()
             except:
                 task_zip = None
             del data["task_file"]
 
             problems = dict_from_prefix("problem", data)
-            limits = dict_from_prefix("limits", data)
+            environment_type = data.get("environment_type", "")
+            environment_parameters = dict_from_prefix("envparams", data).get(environment_type, {})
+            environment_id = dict_from_prefix("environment_id", data).get(environment_type, "")
 
             data = {key: val for key, val in data.items() if
                     not key.startswith("problem")
-                    and not key.startswith("limits")
-                    and not key.startswith("/")}
-            del data["@action"]
+                    and not key.startswith("envparams")
+                    and not key.startswith("environment_id")
+                    and not key.startswith("/")
+                    and not key == "@action"}
+
+            data["environment_id"] = environment_id # we do this after having removed all the environment_id[something] entries
 
             # Determines the task filetype
             if data["@filetype"] not in self.task_factory.get_available_task_file_extensions():
@@ -150,16 +156,16 @@ class CourseEditTask(INGIniousAdminPage):
                 if category not in course_tags:
                     return json.dumps({"status": "error", "message": _("Unknown category tag.")})
 
-            # Task limits
-            data["limits"] = limits
-            if "hard_time" in data["limits"] and data["limits"]["hard_time"] == "":
-                del data["limits"]["hard_time"]
+            # Task environment parameters
+            data["environment_parameters"] = environment_parameters
 
             # Weight
             try:
                 data["weight"] = float(data["weight"])
             except:
                 return json.dumps({"status": "error", "message": _("Grade weight must be a floating-point number")})
+            if data["weight"] < 0:
+                return json.dumps({"status": "error", "message": _("Grade weight must be positive!")})
 
             # Groups
             if "groups" in data:
@@ -172,7 +178,7 @@ class CourseEditTask(INGIniousAdminPage):
                     data["stored_submissions"] = 0 if data["store_all"] == "true" else int(stored_submissions)
                 except:
                     return json.dumps(
-                        {"status": "error", "message": _("The number of stored submission must be positive!")})
+                        {"status": "error", "message": _("The number of stored submission must be an integer!")})
 
                 if data["store_all"] == "false" and data["stored_submissions"] <= 0:
                     return json.dumps({"status": "error", "message": _("The number of stored submission must be positive!")})
@@ -191,8 +197,13 @@ class CourseEditTask(INGIniousAdminPage):
                 else:
                     try:
                         result = {"amount": int(data["submission_limit_soft_0"]), "period": int(data["submission_limit_soft_1"])}
+                        if result['period'] < 0:
+                            return json.dumps({"status": "error", "message": _("The soft limit period must be positive!")})
                     except:
                         return json.dumps({"status": "error", "message": _("Invalid submission limit!")})
+
+                if data['submission_limit'] != 'none' and result['amount'] < 0:
+                    return json.dumps({"status": "error", "message": _("The submission limit must be positive!")})
 
                 del data["submission_limit_hard"]
                 del data["submission_limit_soft_0"]
@@ -209,6 +220,18 @@ class CourseEditTask(INGIniousAdminPage):
             del data["accessible_start"]
             del data["accessible_end"]
             del data["accessible_soft_end"]
+            try:
+                AccessibleTime(data["accessible"])
+            except Exception as message:
+                return json.dumps({"status": "error", "message": _("Invalid task accessibility ({})").format(message)})
+
+            # Random inputs
+            try:
+                data['input_random'] = int(data['input_random'])
+            except:
+                return json.dumps({"status": "error", "message": _("The number of random inputs must be an integer!")})
+            if data['input_random'] < 0:
+                return json.dumps({"status": "error", "message": _("The number of random inputs must be positive!")})
 
             # Checkboxes
             if data.get("responseIsHTML"):
@@ -245,7 +268,7 @@ class CourseEditTask(INGIniousAdminPage):
             return error
 
         try:
-            WebAppTask(course, taskid, data, task_fs, None, self.plugin_manager, self.task_factory.get_problem_types())
+            Task(course, taskid, data, self.course_factory.get_fs(), self.plugin_manager, self.task_factory.get_problem_types())
         except Exception as message:
             return json.dumps({"status": "error", "message": _("Invalid data: {}").format(str(message))})
 

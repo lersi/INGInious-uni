@@ -4,9 +4,8 @@
 # more information about the licensing of this file.
 
 """ Index page """
+import flask
 from collections import OrderedDict
-
-import web
 
 from inginious.frontend.pages.utils import INGIniousAuthPage
 
@@ -21,22 +20,10 @@ class MyCoursesPage(INGIniousAuthPage):
     def POST_AUTH(self):  # pylint: disable=arguments-differ
         """ Parse course registration or course creation and display the course list page """
 
-        username = self.user_manager.session_username()
-        user_info = self.database.users.find_one({"username": username})
-        user_input = web.input()
+        user_input = flask.request.form
         success = None
 
-        # Handle registration to a course
-        if "register_courseid" in user_input and user_input["register_courseid"] != "":
-            try:
-                course = self.course_factory.get_course(user_input["register_courseid"])
-                if not course.is_registration_possible(user_info):
-                    success = False
-                else:
-                    success = self.user_manager.course_register_user(course, username, user_input.get("register_password", None))
-            except:
-                success = False
-        elif "new_courseid" in user_input and self.user_manager.user_is_superadmin():
+        if "new_courseid" in user_input and self.user_manager.user_is_superadmin():
             try:
                 courseid = user_input["new_courseid"]
                 self.course_factory.create_course(courseid, {"name": courseid, "accessible": False})
@@ -49,7 +36,7 @@ class MyCoursesPage(INGIniousAuthPage):
     def show_page(self, success):
         """  Display main course list page """
         username = self.user_manager.session_username()
-        user_info = self.database.users.find_one({"username": username})
+        user_info = self.user_manager.get_user_info(username)
 
         all_courses = self.course_factory.get_all_courses()
 
@@ -74,4 +61,8 @@ class MyCoursesPage(INGIniousAuthPage):
 
         registerable_courses = OrderedDict(sorted(iter(registerable_courses.items()), key=lambda x: x[1].get_name(self.user_manager.session_language())))
 
-        return self.template_helper.get_renderer().mycourses(open_courses, registerable_courses, except_free_last_submissions, success)
+        return self.template_helper.render("mycourses.html",
+                                           open_courses=open_courses,
+                                           registrable_courses=registerable_courses,
+                                           submissions=except_free_last_submissions,
+                                           success=success)

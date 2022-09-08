@@ -4,18 +4,18 @@
 //
 "use strict";
 
-/**
- * Redirect to the studio to create a new task
- */
-function studio_create_new_task()
+
+// Hacky fix for codemirror in collapsable elements
+function refresh_codemirror()
 {
-    var task_id = $('#new_task_id');
-    if(!task_id.val().match(/^[a-zA-Z0-9_\-]+$/))
+    var t = this;
+    setTimeout(function()
     {
-        alert('Task id should only contain alphanumeric characters (in addition to "_" and "-").');
-        return;
-    }
-    window.location.href = window.location.href + "/../edit/task/" + task_id.val()
+        $('.CodeMirror', t).each(function(i, el)
+        {
+            el.CodeMirror.refresh();
+        });
+    }, 10);
 }
 
 /**
@@ -30,22 +30,11 @@ function studio_load(data)
         studio_init_template(pid, problem);
     });
 
-    // Hacky fix for codemirror in collapsable elements
-    var collapsable = $('#tab_subproblems').find('.collapse');
-    collapsable.on('show.bs.collapse', function()
-    {
-        var t = this;
-        setTimeout(function()
-        {
-            $('.CodeMirror', t).each(function(i, el)
-            {
-                el.CodeMirror.refresh();
-            });
-        }, 10);
-    });
+    var collapsable = $('#tab_subproblems .card');
+    collapsable.on('show.bs.collapse',refresh_codemirror);
 
     // Must be done *after* the event definition
-    if(collapsable.length != 1)
+    if(collapsable.length !== 1)
         collapsable.collapse('hide');
 
     $('form#edit_task_form').on('submit', function()
@@ -53,6 +42,15 @@ function studio_load(data)
         studio_submit();
         return false;
     });
+
+    studio_update_environments();
+    $('#environment-type').change(studio_update_environments);
+}
+
+function studio_update_environments() {
+    var env_type = $('#environment-type').val();
+    $('.environment-boxes').hide();
+    $('#environment-box-'+env_type).show();
 }
 
 /**
@@ -348,6 +346,8 @@ function studio_create_new_subproblem()
 
     studio_create_from_template('#' + new_subproblem_type, new_subproblem_pid);
     studio_init_template(new_subproblem_pid, {"type": new_subproblem_type.substring(11)});
+
+    $('#tab_subproblems .card').on('show.bs.collapse',refresh_codemirror);
 }
 
 /**
@@ -466,6 +466,8 @@ function studio_init_template_multiple_choice(well, pid, problem)
         $('#multiple-' + pid, well).attr('checked', true);
     if("centralize" in problem && problem["centralize"])
         $('#centralize-' + pid, well).attr('checked', true);
+    if("unshuffle" in problem && problem["unshuffle"])
+        $('#unshuffle-' + pid, well).attr('checked', true);
 
     var success_message = "";
     var error_message = "";
@@ -749,5 +751,37 @@ function uploadData(formdata){
         error: function () {
             console.log("something went wrong");
         }
+    });
+}
+
+// Use selectize.js to select for a user.
+// element is the element to be used as a selector ($('#id'))
+// path_to_search_user is the path to the search_user page (/admin/tutorial/search_user/) with the final /
+// current_users is an array of dict with the format [{'username': 'theusername', 'realname': 'The realname'}]
+// single: true for single user selection, false for multiple.
+function user_selection(element, path_to_search_user, current_users, single) {
+    element.selectize({
+        delimiter: ',',
+        persist: false,
+        valueField: 'username',
+        labelField: 'realname',
+        searchField: ['username', 'realname'],
+        create: false,
+        options: current_users.map(function(x) { return {"username": x.username, "realname": x.realname + " (" + x.username + ")"} }),
+        items: current_users.map(function(x) { return x.username }),
+        load: function(query, callback) {
+            if (!query.length) return callback();
+            $.ajax({
+                url: path_to_search_user + encodeURIComponent(query),
+                type: 'GET',
+                error: function() {
+                    callback();
+                },
+                success: function(res) {
+                    callback(res[0].map(function(x) { return {"username": x.username, "realname": x.realname + " (" + x.username + ")"} }));
+                }
+            });
+        },
+        maxItems: single ? 1 : null
     });
 }

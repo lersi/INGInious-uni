@@ -7,8 +7,7 @@
     It uses the key "score" to retrieve score from submissions
 """
 from collections import OrderedDict
-
-import web
+from werkzeug.exceptions import NotFound
 
 from inginious.frontend.pages.utils import INGIniousAuthPage
 
@@ -24,12 +23,13 @@ class ScoreBoardCourse(INGIniousAuthPage):
         try:
             names = {i: val["name"] for i, val in enumerate(scoreboards)}
         except:
-            raise web.notfound("Invalid configuration")
+            raise NotFound(description="Invalid configuration")
 
         if len(names) == 0:
-            raise web.notfound()
+            raise NotFound()
 
-        return self.template_helper.get_custom_renderer('frontend/plugins/scoreboard').main(course, names)
+        return self.template_helper.render("main.html", template_folder="frontend/plugins/scoreboard",
+                                           course=course, scoreboards=names)
 
 
 def sort_func(overall_result_per_user, reverse):
@@ -55,7 +55,7 @@ class ScoreBoard(INGIniousAuthPage):
             scoreboard_content = scoreboards[scoreboardid]["content"]
             scoreboard_reverse = bool(scoreboards[scoreboardid].get('reverse', False))
         except:
-            raise web.notfound()
+            raise NotFound()
 
         # Convert scoreboard_content
         if isinstance(scoreboard_content, str):
@@ -71,7 +71,7 @@ class ScoreBoard(INGIniousAuthPage):
             try:
                 task_names[taskid] = course.get_task(taskid).get_name(self.user_manager.session_language())
             except:
-                raise web.notfound("Unknown task id "+taskid)
+                raise NotFound(description="Unknown task id "+taskid)
 
         # Get all submissions
         results = self.database.submissions.find({
@@ -120,7 +120,7 @@ class ScoreBoard(INGIniousAuthPage):
         # Get user names
         users_realname = {}
         for username, userinfo in self.user_manager.get_users_info(list(users)).items():
-            users_realname[username] = userinfo[0] if userinfo else username
+            users_realname[username] = userinfo.realname if userinfo else username
 
         # Compute overall result per user, and sort them
         overall_result_per_user = {}
@@ -160,8 +160,7 @@ class ScoreBoard(INGIniousAuthPage):
                 line.append("")
 
             # Users
-            line.append(",".join(sorted([users_realname[u] for u in user])))
-
+            line.append(",".join(sorted([users_realname[u] if users_realname.get(u, '') else u for u in user])))
             if len(scoreboard_content) == 1:
                 line.append(overall_result_per_user[user]["total"])
             else:
@@ -172,8 +171,9 @@ class ScoreBoard(INGIniousAuthPage):
 
             table.append(line)
 
-        renderer = self.template_helper.get_custom_renderer('frontend/plugins/scoreboard')
-        return renderer.scoreboard(course, scoreboardid, scoreboard_name, header, table, emphasized_columns)
+        return self.template_helper.render("scoreboard.html", template_folder="frontend/plugins/scoreboard",
+                                           course=course, scoreboardid=scoreboardid, scoreboard_name=scoreboard_name,
+                                           header=header, table=table, emphasized_columns=emphasized_columns)
 
 
 def course_menu(course, template_helper):
@@ -181,7 +181,8 @@ def course_menu(course, template_helper):
     scoreboards = course.get_descriptor().get('scoreboard', [])
 
     if scoreboards != []:
-        return str(template_helper.get_custom_renderer('frontend/plugins/scoreboard', layout=False).course_menu(course))
+        return template_helper.render("course_menu.html", template_folder='frontend/plugins/scoreboard',
+                                          course=course)
     else:
         return None
 
@@ -196,7 +197,8 @@ def task_menu(course, task, template_helper):
                 tolink.append((sid, scoreboard["name"]))
 
         if tolink:
-            return str(template_helper.get_custom_renderer('frontend/plugins/scoreboard', layout=False).task_menu(course, tolink))
+            return template_helper.render("task_menu.html", template_folder="frontend/plugins/scoreboard",
+                                          course=course, links=tolink)
         return None
     except:
         return None
@@ -213,7 +215,7 @@ def init(plugin_manager, _, _2, _3):
         Available configuration in course.yaml:
         ::
 
-            - scoreboard: #you can define multiple scoreboards
+            scoreboard: #you can define multiple scoreboards
                 - content: "taskid1" #creates a scoreboard for taskid1
                   name: "Scoreboard task 1"
                 - content: ["taskid2", "taskid3"] #creates a scoreboard for taskid2 and taskid3 (sum of both score is taken as overall score)
@@ -222,9 +224,7 @@ def init(plugin_manager, _, _2, _3):
                   name: "Another scoreboard"
                   reverse: True #reverse the score (less is better)
     """
-    page_pattern_course = r'/scoreboard/([a-z0-9A-Z\-_]+)'
-    page_pattern_scoreboard = r'/scoreboard/([a-z0-9A-Z\-_]+)/([0-9]+)'
-    plugin_manager.add_page(page_pattern_course, ScoreBoardCourse)
-    plugin_manager.add_page(page_pattern_scoreboard, ScoreBoard)
+    plugin_manager.add_page('/scoreboard/<courseid>', ScoreBoardCourse.as_view('scoreboardcourse'))
+    plugin_manager.add_page('/scoreboard/<courseid>/<scoreboardid>', ScoreBoard.as_view('scoreboard'))
     plugin_manager.add_hook('course_menu', course_menu)
     plugin_manager.add_hook('task_menu', task_menu)

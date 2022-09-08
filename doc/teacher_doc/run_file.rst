@@ -489,7 +489,7 @@ The *rst-image* command generates a raw reStructuredText block containing an ima
         rst-image smiley.png | feedback-msg -a
 
 The optional *format* parameter is used to specify the image format (jpg, png,...) if this is not explicitly specified
-the the image filename. The output is written on the standard output. For instance, the command can be used as follows:
+the image filename. The output is written on the standard output. For instance, the command can be used as follows:
 
 get_admonition / rst-msgblock
 `````````````````````````````
@@ -618,6 +618,24 @@ If the submission is made as a user, it will contain the username. It it's made 
 it will contain the list of the user's usernames in the
 group, joined with ','.
 
+You can retrieve the email of the user that submitted the task with the
+following lines. If this is a group submission, this will give a list of
+the user's emails in the group, joined with ','.
+
+.. tabs::
+
+    .. code-tab:: ipython3
+
+        username = get_input("@email")
+
+    .. code-tab:: py
+
+        username = input.get_input("@email")
+
+    .. code-tab:: bash
+
+        getinput @email
+
 The four letter code of the student's language (for example `en_US` or `fr_FR`) can also be retrieved using
 
 .. tabs::
@@ -634,7 +652,55 @@ The four letter code of the student's language (for example `en_US` or `fr_FR`) 
 
         getinput @lang
 
-Note that plugins are free to add new `@`-prefixed fields to the available input using the `new_submission` hook.
+The submission time, following the datetime format "%Y-%M-%D %H:%M:%S.%f", can be retrieved using
+
+.. tabs::
+
+    .. code-tab:: ipython3
+
+        submission_time = get_input("@time")
+
+    .. code-tab:: py
+
+        submission_time = input.get_input("@time")
+
+    .. code-tab:: bash
+
+        getinput @time
+
+
+With python or ipython, you can directly retrieve the submission time as a `datetime.datetime` object by using
+
+.. tabs::
+
+    .. code-tab:: ipython3
+
+        submission_time = get_submission_time()
+
+    .. code-tab:: py
+
+        submission_time = input.get_submission_time()
+
+
+Random inputs may also be generated if you configured it so. You can access these random inputs using
+
+.. tabs::
+
+    .. code-tab:: ipython3
+
+        lang = get_input("@random")
+
+    .. code-tab:: py
+
+        lang = input.get_input("@random")
+
+    .. code-tab:: bash
+
+        getinput @random
+
+Note that this returns the list of random values corresponding to the number of random inputs asked in the task configuration.
+
+Finally, note that plugins are free to add new `@`-prefixed fields to the available input using the `new_submission` hook.
 
 parsetemplate
 `````````````
@@ -648,14 +714,14 @@ none is given, the template will be replaced.
 
     .. code-tab:: ipython3
 
-        thecode = parse_template("student.c") # Parse the `student.c` template file
-        thecode = parse_template("template.c", "student.c") # Parse the `template.c` template file and save the parsed file into `student.c`
+        parse_template("student.c") # Parse the `student.c` template file
+        parse_template("template.c", "student.c") # Parse the `template.c` template file and save the parsed file into `student.c`
 
     .. code-tab:: py
 
         from inginious_container_api import input
-        thecode = input.parse_template("student.c") # Parse the `student.c` template file
-        thecode = input.parse_template("template.c", "student.c") # Parse the `template.c` template file and save the parsed file into `student.c`
+        input.parse_template("student.c") # Parse the `student.c` template file
+        input.parse_template("template.c", "student.c") # Parse the `template.c` template file and save the parsed file into `student.c`
 
     .. code-tab:: bash
 
@@ -709,6 +775,8 @@ Here is the list of the main parameters:
 - network sharing (--share-network)
         Share the network stack of the grading container with the student container. This is not the case by
         default. If the container container has network access, this will also be the case for the student!
+- start student as root (--run-as-root)
+        Start the student_container on a safe non shared kernel runtime with root access.
 
 Beyond these optionals args, *run_student* various commands also takes an additional (mandatory) argument:
 the command to be run in the new container.
@@ -717,9 +785,10 @@ More technically, please note that:
 
 - the *run_student* **command** (accesible in bash) proxies stdin, stdout, stderr, most signals and the return value
 - There are special return values:
-    - 252 means that the command was killed due to an out-of-memory
-    - 253 means that the command timed out
-    - 254 means that an error occurred while running the proxy
+    - 251: ``run_student`` is not available in this container/environment
+    - 252: the command was killed due to an out-of-memory
+    - 253: the command timed out
+    - 254: an error occurred while running the proxy
 
 In Python, two flavours of *run_student* are available: `run` and `run_simple`. The first is a low-level function,
 which allows you to modify most of the behavior of the behavior of the function. The second aims to solve the most used
@@ -733,7 +802,7 @@ the examples below, please check the API directly for more information.
         # runs student/script.sh in another safe container, with a timeout of 60 seconds,
         # and stores the output in the variables `stdout` and `stderr`, and the return value
         # inside the variable `retval`.
-        stdout, stderr, retval = run_student_simple("student/script.sh", time=60)
+        stdout, stderr, retval = run_student_simple("student/script.sh", time_limit=60)
 
     .. code-tab:: py
 
@@ -742,13 +811,91 @@ the examples below, please check the API directly for more information.
         # runs student/script.sh in another safe container, with a timeout of 60 seconds,
         # and stores the output in the variables `stdout` and `stderr`, and the return value
         # inside the variable `retval`.
-        stdout, stderr, retval = run_student.run_student_simple("student/script.sh", time=60)
+        stdout, stderr, retval = run_student.run_student_simple("student/script.sh", time_limit=60)
 
     .. code-tab:: bash
 
         # runs student/script.sh in another safe container, with a timeout of 60 seconds,
         # and stores the output in the variable `output`, as an array of lines.
         output=`run_student --time 60 student/script.sh`
+
+
+
+.. _ssh_student:
+
+ssh_student
+-----------
+
+.. DANGER::
+
+    The *ssh_student* feature requires to allow ssh and internet connection in the environment configuration tab.
+    Note, to use ssh_student, at least one inginious-agent in your deployment must handle ssh. For more details, see: :ref:`inginious-docker-agent<inginious-agent-docker>`
+
+
+*ssh_student* allows the *run file* to start a sub-containers and to give ssh access to it. It can accept a setup script to run on the student container before launching the ssh server. It is also possible to specify a teardown script to be run on the student container when the student leaves the ssh session.
+This makes you able to secure the grading while giving the student the chance to interact and enter commands within his own container. All the ssh session is recorded into the ``.ssh_logs`` file resulting in the ``student`` subdirectory after the ssh session closed. Please note the setup and teardown scripts will not be run as root to avoid any potential damage to the supervisor (unless the student has root access, meaning it is using a runtime that does not share kernel between containers).
+
+When the student exits the ssh connection, after the teardown script, his specific container is killed and only the changes made to the ``student`` subdirectory will remain in the main (grading) container.
+
+*ssh_student* is nearly as configurable as *run_student* is; you can change the container image (environment), set new timeouts, new memory
+limits, ...
+
+Here is the list of the main parameters:
+
+- container (--container in the ssh_student command)
+        Name of the container to use. The default is the same as the current container.
+- time limit (--time)
+        Timeout (in CPU time) for the container, in seconds. The default is the same as the current container.
+- hard time limit (--hard-time)
+        Hard timeout for the container (in real time), in seconds.
+        The default is three times the value indicated for the time limit.
+        We recommand here to put a very large time limit since the student will require some time to connect (copy-paste the command) and to solve the exercice in live via the ssh connection.
+        Example would be 900 (15 min) or 1800 (30 min). In any case, when the student exits the connection, the container will be killed regardless of its remaining hard time limit.
+- memory limit (--memory)
+        Maximum memory for the container, in Megabytes. The default is the same as the current container.
+- run as root (--run-as-root)
+        Start the student_container on a safe non shared kernel runtime with root access.
+
+Beyond these optionals args, *ssh_student* also takes two additionnal string arguments:
+the **setup-script** to be run in the new container before starting the ssh server and the **teardown-script** to be run at ssh session closure.
+
+More technically about these optional arguments, please note that:
+
+- The **setup-script** can take the form of direct commands or a script file which may start new subprocess. Only the main body of the script will be executed and finished before starting the ssh server. If you want subprocess to continue running in background while the student has ssh access, these subprocess must be launched in a non-blocking way (such as using `subprocess.Popen <https://docs.python.org/fr/3/library/subprocess.html#subprocess.Popen>`_ inside a python setup script).
+- The **teardown-script** follows the same principle. Please note that teardown_script files should be placed in *student/scripts*. This specific directory will automatically be isolated from the student during the ssh session so that the student can not inspect the scripts unless he has root privileges.
+
+
+Here are the different return values:
+    -   0: the student correctly connected and leaved the ssh connection
+    - 251: ``ssh_student`` is not available in this container/environment
+    - 252: the container was killed due to an out-of-memory
+    - 253: the container timedout or no student connected within 2 minutes
+    - 254: an error occurred while running the proxy
+
+
+.. tabs::
+
+    .. code-tab:: ipython3
+
+        # runs a python script in another safe container, then gives ssh access to that container
+        # with a timeout of 30 minutes for the student to resolve the exercise and exit the connection.
+        retval = ssh_student(setup_script="pyhon3 student/scripts/setup.py", hard_time_limit=1800)
+
+    .. code-tab:: py
+
+        from inginious_container_api import ssh_student
+
+        # runs a python script in another safe container, then gives ssh access to that container
+        # with a timeout of 30 minutes for the student to resolve the exercise and exit the connection.
+        retval = ssh_student.ssh_student(setup_script="python3 student/scripts/setup.py", hard_time_limit=1800)
+
+    .. code-tab:: bash
+
+        # runs a python script in another safe container, then gives ssh access to that container
+        # with a timeout of 30 minutes for the student to resolve the exercise and exit the connection.
+        retval=`ssh_student --hard-time 1800 --setup-script "python3 student/scripts/setup.py"`
+
+
 
 Archiving files
 ---------------
@@ -758,3 +905,9 @@ The content of the folder will be automatically compressed and saved in the data
 in the INGInious web interface.
 
 This feature is useful for debug purposes, but also for analytics and for more complex plugins.
+
+Who is running the run file?
+----------------------------
+
+By default it is a user named ``worker`` (id 4242, gid 4242). Some docker runtime allow to run safely as root;
+in these runtimes, the script are thus started by ``root`` (id 0, gid 0).

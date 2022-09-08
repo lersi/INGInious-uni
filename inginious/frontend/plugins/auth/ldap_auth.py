@@ -6,15 +6,17 @@
 """ LDAP plugin """
 
 import logging
-
 import ldap3
-import web
+import flask
+
+from flask import redirect
+from ldap3.core.exceptions import LDAPException
+from ldap3.utils.conv import escape_filter_chars
 
 from inginious.frontend.pages.social import AuthenticationPage
 from inginious.frontend.user_manager import AuthMethod
 
 logger = logging.getLogger('inginious.webapp.plugin.auth.ldap')
-
 
 class LdapAuthMethod(AuthMethod):
     """
@@ -60,68 +62,83 @@ class LdapAuthMethod(AuthMethod):
 class LDAPAuthenticationPage(AuthenticationPage):
     def GET(self, id):
         settings = self.user_manager.get_auth_method(id).get_settings()
-        return self.template_helper.get_custom_renderer('frontend/plugins/auth').custom_auth_form(settings,
-                                                                                                         False)
+        return self.template_helper.render("custom_auth_form.html", template_folder="frontend/plugins/auth",
+                                           settings=settings, error=False)
 
     def POST(self, id):
         # Get configuration
         settings = self.user_manager.get_auth_method(id).get_settings()
-        login_data = web.input()
+        login_data = flask.request.form
         login = login_data["login"].strip().lower()
         password = login_data["password"]
 
         # do not send empty password to the LDAP
         if password.rstrip() == "":
-            return self.template_helper.get_custom_renderer('frontend/plugins/auth').custom_auth_form(
-                settings, "Empty password")
+            return self.template_helper.render("custom_auth_form.html", template_folder="frontend/plugins/auth",
+                                               settings=settings, error= _("Empty password"))
 
         try:
             # Connect to the ldap
             logger.debug('Connecting to ' + settings['host'] + ", port " + str(settings['port']))
+            if "bind_dn" in settings:
+                bind_dn = {"user": settings["bind_dn"].format(login), "password": password}
+            else:
+                bind_dn = {}
+
+            auto_bind = settings.get("auto_bind", True)
             conn = ldap3.Connection(
                 ldap3.Server(settings['host'], port=settings['port'], use_ssl=settings["encryption"] == 'ssl',
-                             get_info=ldap3.ALL), auto_bind=True)
+                             get_info=ldap3.ALL), auto_bind=auto_bind, **bind_dn)
             logger.debug('Connected to ' + settings['host'] + ", port " + str(settings['port']))
-        except Exception as e:
+        except LDAPException as e:
             logger.exception("Can't initialze connection to " + settings['host'] + ': ' + str(e))
-            return self.template_helper.get_custom_renderer('frontend/plugins/auth').custom_auth_form(
-                settings, "Cannot contact host")
+            return self.template_helper.render("custom_auth_form.html", template_folder="frontend/plugins/auth",
+                                               settings=settings, error=_("Cannot contact host"))
 
+        attr_cn = settings.get("cn", "cn")
+        attr_mail = settings.get("mail", "mail")
         try:
-            request = settings["request"].format(login)
-            conn.search(settings["base_dn"], request, attributes=["cn", "mail"])
+            ldap_request = settings["request"].format(escape_filter_chars(login))
+            conn.search(settings["base_dn"], ldap_request, attributes=[attr_cn, attr_mail])
             user_data = conn.response[0]
-        except Exception as ex:
+        except (LDAPException, IndexError) as ex:
             logger.exception("Can't get user data : " + str(ex))
             conn.unbind()
-            return self.template_helper.get_custom_renderer('frontend/plugins/auth').custom_auth_form(
-                settings, "Unknown user")
+            return self.template_helper.render("custom_auth_form.html", template_folder="frontend/plugins/auth",
+                                               settings=settings, error=_("Unknown user"))
 
         if conn.rebind(user_data['dn'], password=password):
             try:
-                email = user_data["attributes"][settings.get("mail", "mail")][0]
+                email = user_data['attributes'][attr_mail]
+                if isinstance(email, list):
+                    email = email[0]
                 username = login
-                realname = user_data["attributes"][settings.get("cn", "cn")][0]
+                realname = user_data["attributes"][attr_cn]
+                if isinstance(realname, list):
+                    realname = realname[0]
+
             except KeyError as e:
                 logger.exception("Can't get field " + str(e) + " from your LDAP server")
-                return self.template_helper.get_custom_renderer('frontend/plugins/auth').custom_auth_form(
-                    settings, "Can't get field " + str(e) + " from your LDAP server")
-            except Exception as e:
+                return self.template_helper.render("custom_auth_form.html",
+                                                   template_folder="frontend/plugins/auth", settings=settings,
+                                                   error=_("Can't get field {} from your LDAP server").format(str(e)))
+            except LDAPException as e:
                 logger.exception("Can't get some user fields")
-                return self.template_helper.get_custom_renderer('frontend/plugins/auth').custom_auth_form(
-                settings, "Can't get some user fields")
+                return self.template_helper.render("custom_auth_form.html", template_folder="frontend/plugins/auth",
+                                                   settings=settings, error=_("Can't get some user fields"))
+            finally:
+                conn.unbind()
 
-            conn.unbind()
-
-            self.user_manager.bind_user(id, (username, realname, email, {}))
+            if not self.user_manager.bind_user(id, (username, realname, email, {})):
+                return redirect("/signin?binderror")
             
             auth_storage = self.user_manager.session_auth_storage().setdefault(id, {})
-            raise web.seeother(auth_storage.get("redir_url", "/"))
+            return redirect(auth_storage.get("redir_url", "/"))
         else:
             logger.debug('Auth Failed')
             conn.unbind()
-            return self.template_helper.get_custom_renderer('frontend/plugins/auth').custom_auth_form(
-                settings, "Incorrect password")
+            return self.template_helper.render("custom_auth_form.html", template_folder="frontend/plugins/auth",
+                                               settings=settings, error=_("Incorrect password"))
 
 
 def init(plugin_manager, _, _2, conf):
@@ -161,5 +178,5 @@ def init(plugin_manager, _, _2, conf):
         conf["port"] = None
 
     the_method = LdapAuthMethod(conf.get("id"), conf.get('name', 'LDAP'), conf.get("imlink", ""), conf)
-    plugin_manager.add_page(r'/auth/page/([^/]+)', LDAPAuthenticationPage)
+    plugin_manager.add_page('/auth/page/<id>', LDAPAuthenticationPage.as_view('ldapauthenticationpage'))
     plugin_manager.register_auth_method(the_method)

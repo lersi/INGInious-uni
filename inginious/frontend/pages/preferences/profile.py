@@ -4,12 +4,14 @@
 # more information about the licensing of this file.
 
 """ Profile page """
-import hashlib
 import re
-import web
+
+import flask
 from pymongo import ReturnDocument
+from werkzeug.exceptions import NotFound
 
 from inginious.frontend.pages.utils import INGIniousAuthPage
+from inginious.frontend.user_manager import UserManager
 
 
 class ProfilePage(INGIniousAuthPage):
@@ -25,9 +27,11 @@ class ProfilePage(INGIniousAuthPage):
             if re.match(r"^[-_|~0-9A-Z]{4,}$", data["username"], re.IGNORECASE) is None:
                 error = True
                 msg = _("Invalid username format.")
+                return result, msg, error
             elif self.database.users.find_one({"username": data["username"]}):
                 error = True
                 msg = _("Username already taken")
+                return result, msg, error
             else:
                 result = self.database.users.find_one_and_update({"email": userdata["email"]},
                                                                  {"$set": {"username": data["username"]}},
@@ -35,11 +39,10 @@ class ProfilePage(INGIniousAuthPage):
                 if not result:
                     error = True
                     msg = _("Incorrect email.")
+                    return result, msg, error
                 else:
                     self.user_manager.connect_user(result["username"], result["realname"], result["email"],
-                                                   result["language"])
-                    msg = _("Profile updated.")
-            return result, msg, error
+                                                   result["language"], result.get("tos_accepted", False))
 
         # Check if updating the password.
         if self.app.allow_registration and len(data["passwd"]) in range(1, 6):
@@ -51,8 +54,8 @@ class ProfilePage(INGIniousAuthPage):
             msg = _("Passwords don't match !")
             return result, msg, error
         elif self.app.allow_registration and len(data["passwd"]) >= 6:
-            oldpasswd_hash = hashlib.sha512(data["oldpasswd"].encode("utf-8")).hexdigest()
-            passwd_hash = hashlib.sha512(data["passwd"].encode("utf-8")).hexdigest()
+            oldpasswd_hash = UserManager.hash_password(data["oldpasswd"])
+            passwd_hash = UserManager.hash_password(data["passwd"])
 
             match = {"username": self.user_manager.session_username()}
             if "password" in userdata:
@@ -96,6 +99,12 @@ class ProfilePage(INGIniousAuthPage):
             return result, msg, error
 
         msg = _("Profile updated.")
+
+        #updating tos
+        if self.app.terms_page is not None and self.app.privacy_page is not None:
+            self.database.users.find_one_and_update({"username": self.user_manager.session_username()},
+                                                {"$set": {"tos_accepted": "term_policy_check" in data}})
+            self.user_manager.set_session_tos_signed()
         return result, msg, error
 
     def GET_AUTH(self):  # pylint: disable=arguments-differ
@@ -103,21 +112,24 @@ class ProfilePage(INGIniousAuthPage):
         userdata = self.database.users.find_one({"email": self.user_manager.session_email()})
 
         if not userdata:
-            raise web.notfound()
+            raise NotFound(description=_("User unavailable."))
 
-        return self.template_helper.get_renderer().preferences.profile("", False)
+        return self.template_helper.render("preferences/profile.html", terms_page=self.app.terms_page,
+                                           privacy_page=self.app.privacy_page, msg="", error=False)
 
     def POST_AUTH(self):  # pylint: disable=arguments-differ
         """ POST request """
         userdata = self.database.users.find_one({"email": self.user_manager.session_email()})
 
         if not userdata:
-            raise web.notfound()
+            raise NotFound(description=_("User unavailable."))
+
 
         msg = ""
         error = False
-        data = web.input()
+        data = flask.request.form
         if "save" in data:
             userdata, msg, error = self.save_profile(userdata, data)
 
-        return self.template_helper.get_renderer().preferences.profile(msg, error)
+        return self.template_helper.render("preferences/profile.html", terms_page=self.app.terms_page,
+                                           privacy_page=self.app.privacy_page, msg=msg, error=error)

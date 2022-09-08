@@ -4,14 +4,13 @@
 # more information about the licensing of this file.
 
 import re
-
-import web
+import flask
 
 from inginious.frontend.accessible_time import AccessibleTime
 from inginious.frontend.pages.course_admin.utils import INGIniousAdminPage
 
 
-class CourseSettings(INGIniousAdminPage):
+class CourseSettingsPage(INGIniousAdminPage):
     """ Couse settings """
 
     def GET_AUTH(self, courseid):  # pylint: disable=arguments-differ
@@ -26,25 +25,20 @@ class CourseSettings(INGIniousAdminPage):
         errors = []
         course_content = {}
         try:
-            data = web.input()
+            data = flask.request.form
             course_content = self.course_factory.get_course_descriptor_content(courseid)
             course_content['name'] = data['name']
             if course_content['name'] == "":
                 errors.append(_('Invalid name'))
             course_content['description'] = data['description']
-            course_content['admins'] = list(map(str.strip, data['admins'].split(',')))
+            course_content['admins'] = list(map(str.strip, data['admins'].split(','))) if data['admins'].strip() else []
             if not self.user_manager.user_is_superadmin() and self.user_manager.session_username() not in course_content['admins']:
                 errors.append(_('You cannot remove yourself from the administrators of this course'))
-            course_content['tutors'] = list(map(str.strip, data['tutors'].split(',')))
+            course_content['tutors'] = list(map(str.strip, data['tutors'].split(','))) if data['tutors'].strip() else []
             if len(course_content['tutors']) == 1 and course_content['tutors'][0].strip() == "":
                 course_content['tutors'] = []
 
             course_content['groups_student_choice'] = True if data["groups_student_choice"] == "true" else False
-
-            if course_content.get('use_classrooms', True) != (data['use_classrooms'] == "true"):
-                self.database.aggregations.delete_many({"courseid": course.get_id()})
-
-            course_content['use_classrooms'] = True if data["use_classrooms"] == "true" else False
 
             if data["accessible"] == "custom":
                 course_content['accessible'] = "{}/{}".format(data["accessible_start"], data["accessible_end"])
@@ -82,9 +76,13 @@ class CourseSettings(INGIniousAdminPage):
                 errors.append(_('Invalid ACL value'))
             if course_content['registration_ac'] == "None":
                 course_content['registration_ac'] = None
-            course_content['registration_ac_list'] = data['registration_ac_list'].splitlines()
+
+            course_content['registration_ac_accept'] = True if data['registration_ac_accept'] == "true" else False
+            course_content['registration_ac_list'] = [line.strip() for line in data['registration_ac_list'].splitlines()]
+
 
             course_content['is_lti'] = 'lti' in data and data['lti'] == "true"
+            course_content['lti_url'] = data.get("lti_url", "")
             course_content['lti_keys'] = dict([x.split(":") for x in data['lti_keys'].splitlines() if x])
 
             for lti_key in course_content['lti_keys'].keys():
@@ -104,4 +102,4 @@ class CourseSettings(INGIniousAdminPage):
 
     def page(self, course, errors=None, saved=False):
         """ Get all data and display the page """
-        return self.template_helper.get_renderer().course_admin.settings(course, errors, saved)
+        return self.template_helper.render("course_admin/settings.html", course=course, errors=errors, saved=saved)

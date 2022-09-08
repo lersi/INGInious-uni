@@ -2,213 +2,224 @@
 #
 # This file is part of INGInious. See the LICENSE and the COPYRIGHTS files for
 # more information about the licensing of this file.
-
+import json
+import logging
 import pymongo
-import web
-import re
-import itertools
-import gettext
-from datetime import datetime
-from bson.objectid import ObjectId
-from collections import OrderedDict
+import flask
+from bson import ObjectId
+from flask import Response
+from werkzeug.exceptions import NotFound, Forbidden
 
-from inginious.frontend.pages.course_admin.utils import make_csv, INGIniousAdminPage
-from inginious.frontend.pages.course_admin.statistics import compute_statistics
-from inginious.common.base import id_checker
+from inginious.frontend.pages.course_admin.utils import make_csv, INGIniousSubmissionsAdminPage
 
 
-class CourseSubmissionsPage(INGIniousAdminPage):
-    """ List information about a task done by a student """
-
-    _allowed_sort = ["submitted_on", "username", "grade", "taskid"]
-    _allowed_sort_name = [_("Submitted on"), _("User"), _("Grade"), _("Task id")]
-    _valid_formats = ["taskid/username", "taskid/aggregation", "username/taskid", "aggregation/taskid"]
-    _valid_formats_name = [_("taskid/username"), _("taskid/aggregation"), _("username/taskid"), _("aggregation/taskid")]
-    _trunc_limit = 500  # To trunc submissions if there are too many submissions
+class CourseSubmissionsPage(INGIniousSubmissionsAdminPage):
+    """ Page that allow search, view, replay an download of submisssions done by students """
+    _logger = logging.getLogger("inginious.webapp.submissions")
 
     def POST_AUTH(self, courseid):  # pylint: disable=arguments-differ
         """ POST request """
         course, __ = self.get_course_and_check_rights(courseid)
         msgs = []
 
-        if "replay" in web.input():
-            if not self.user_manager.has_admin_rights_on_course(course):
-                raise web.notfound()
-            
-            input = self.get_input()
-            tasks = course.get_tasks()
-            data, __ = self.get_submissions(course, input)
-            for submission in data:
-                self.submission_manager.replay_job(tasks[submission["taskid"]], submission)
-            msgs.append(_("{0} selected submissions were set for replay.").format(str(len(data))))
-            
-        return self.page(course, msgs)
+        user_input = flask.request.form.copy()
+        user_input["users"] = flask.request.form.getlist("users")
+        user_input["audiences"] = flask.request.form.getlist("audiences")
+        user_input["tasks"] = flask.request.form.getlist("tasks")
+        user_input["org_tags"] = flask.request.form.getlist("org_tasks")
+
+        if "replay_submission" in user_input:
+            # Replay a unique submission
+            submission = self.database.submissions.find_one({"_id": ObjectId(user_input["replay_submission"])})
+            if submission is None:
+                raise NotFound(description=_("This submission doesn't exist."))
+
+            self.submission_manager.replay_job(course.get_task(submission["taskid"]), submission)
+            return Response(response=json.dumps({"status": "waiting"}), content_type='application/json')
+
+        elif "csv" in user_input or "download" in user_input or "replay" in user_input:
+            best_only = "eval_dl" in user_input and "download" in user_input
+            params = self.get_input_params(json.loads(user_input.get("displayed_selection", "")), course)
+            data = self.submissions_from_user_input(course, params, msgs, best_only=best_only)
+
+            if "csv" in user_input:
+                return make_csv(data)
+
+            elif "download" in user_input:
+                download_type = user_input.get("download_type", "")
+                if download_type not in ["taskid/username", "taskid/audience", "username/taskid", "audience/taskid"]:
+                    download_type = "taskid/username"
+                if (best_only or "eval" in params) and "simplify" in user_input:
+                    sub_folders = list(download_type.split('/'))
+                else:
+                    sub_folders = list(download_type.split('/')) + ["submissiondateid"]
+                archive, error = self.submission_manager.get_submission_archive(course, data, sub_folders, simplify="simplify" in user_input)
+                if not error:
+                    response = Response(response=archive, content_type='application/x-gzip')
+                    response.headers['Content-Disposition'] = 'attachment; filename="submissions.tgz"'
+                    return response
+                else:
+                    msgs.append(_("The following submission could not be prepared for download: {}").format(error))
+                    return self.page(course, params, msgs=msgs)
+
+            elif "replay" in user_input:
+                if not self.user_manager.has_admin_rights_on_course(course):
+                    raise Forbidden(description=_("You don't have admin rights on this course."))
+
+                tasks = course.get_tasks()
+                for submission in data:
+                    self.submission_manager.replay_job(tasks[submission["taskid"]], submission)
+                msgs.append(_("{0} selected submissions were set for replay.").format(str(len(data))))
+                return self.page(course, params, msgs=msgs)
+
+        elif "page" in user_input:
+            params = self.get_input_params(json.loads(user_input["displayed_selection"]), course)
+            try:
+                page = int(user_input["page"])
+            except TypeError:
+                page = 1
+            return self.page(course, params, page=page, msgs=msgs)
+        else:
+            params = self.get_input_params(user_input, course)
+            return self.page(course, params, msgs=msgs)
 
     def GET_AUTH(self, courseid):  # pylint: disable=arguments-differ
         """ GET request """
         course, __ = self.get_course_and_check_rights(courseid)
-        return self.page(course)
 
-    def submission_url_generator(self, submissionid):
-        """ Generates a submission url """
-        return "?submission=" + submissionid
+        user_input = flask.request.args.copy()
+        user_input["users"] = flask.request.args.getlist("users")
+        user_input["audiences"] = flask.request.args.getlist("audiences")
+        user_input["tasks"] = flask.request.args.getlist("tasks")
+        user_input["org_tags"] = flask.request.args.getlist("org_tasks")
 
-    def page(self, course, msgs=None):
+        if "download_submission" in user_input:
+            submission = self.database.submissions.find_one({"_id": ObjectId(user_input["download_submission"]),
+                                                             "courseid": course.get_id(),
+                                                             "status": {"$in": ["done", "error"]}})
+            if submission is None:
+                raise NotFound(description=_("The submission doesn't exist."))
+
+            self._logger.info("Downloading submission %s - %s - %s - %s", submission['_id'], submission['courseid'],
+                              submission['taskid'], submission['username'])
+            archive, error = self.submission_manager.get_submission_archive(course, [submission], [])
+            if not error:
+                response = Response(response=archive, content_type='application/x-gzip')
+                response.headers['Content-Disposition'] = 'attachment; filename="submissions.tgz"'
+                return response
+
+        params = self.get_input_params(user_input, course)
+        return self.page(course, params)
+
+    def page(self, course, params, page=1, msgs=None):
         """ Get all data and display the page """
         msgs = msgs if msgs else []
-        
-        user_input = self.get_input()
-        data, classroom = self.get_submissions(course, user_input)  # ONLY classrooms user wants to query
-        if len(data) == 0 and not self.show_collapse(user_input):
-            msgs.append(_("No submissions found"))
 
-        classrooms = self.user_manager.get_course_aggregations(course)  # ALL classrooms of the course
-        users = self.get_users(course)  # All users of the course
-        tasks = course.get_tasks()  # All tasks of the course
+        users, tutored_users, audiences, tutored_audiences, tasks, limit = self.get_course_params(course, params)
 
-        statistics = None
-        if user_input.stat != "no_stat":
-            statistics = compute_statistics(tasks, data, True if "with_pond_stat" == user_input.stat else False)
+        data, sub_count, pages = self.submissions_from_user_input(course, params, msgs, page, limit)
 
-        if "csv" in web.input():
-            return make_csv(data)
-                        
-        if "download" in web.input():
-            # Tweak if not using classrooms : classroom['students'] may content ungrouped users
-            aggregations = dict([(username,
-                                  aggregation if course.use_classrooms() or (
-                                  username in aggregation['groups'][0]["students"]) else None
-                                  ) for aggregation in classroom for username in aggregation["students"]])
+        return self.template_helper.render("course_admin/submissions.html", course=course, users=users,
+                                           tutored_users=tutored_users, audiences=audiences,
+                                           tutored_audiences=tutored_audiences, tasks=tasks, old_params=params,
+                                           data=data, displayed_selection=json.dumps(params),
+                                           number_of_pages=pages, page_number=page, msgs=msgs, sub_count = sub_count)
 
-            download_type = web.input(download_type=self._valid_formats[0]).download_type
-            if download_type not in self._valid_formats:
-                download_type = self._valid_formats[0]
-
-            archive, error = self.submission_manager.get_submission_archive(data, list(reversed(download_type.split('/'))), aggregations)
-            if not error:
-                # self._logger.info("Downloading %d submissions from course %s", len(data), course.get_id())
-                web.header('Content-Type', 'application/x-gzip', unique=True)
-                web.header('Content-Disposition', 'attachment; filename="submissions.tgz"', unique=True)
-                return archive
-            else:
-                msgs.append(_("The following submission could not be prepared for download: {}").format(error))
-
-        if user_input.limit != '' and user_input.limit.isdigit():
-            data = data[:int(user_input.limit)]
-            
-        if len(data) > self._trunc_limit:
-            msgs.append(_("The result contains more than {0} submissions. The displayed submissions are truncated.\n").format(self._trunc_limit))
-            data = data[:self._trunc_limit]
-        return self.template_helper.get_renderer().course_admin.submissions(course, tasks, users, classrooms, data, statistics, user_input, self._allowed_sort, self._allowed_sort_name, self._valid_formats, msgs, self.show_collapse(user_input))
-
-    def show_collapse(self, user_input):
-        """ Return True is we should display the main collapse. """
-        # If users has not specified any user/aggregation, there are no submissions so we display the main collapse.
-        if len(user_input['user']) == 0 and len(user_input['aggregation']) == 0:
-            return True
-        return False
-
-    def get_users(self, course):
-        """ Returns a sorted list of users """
-        users = OrderedDict(sorted(list(self.user_manager.get_users_info(self.user_manager.get_course_registered_users(course)).items()),
-            key=lambda k: k[1][0] if k[1] is not None else ""))
-        return users
-        
-    def get_submissions(self, course, user_input):
+    def submissions_from_user_input(self, course, user_input, msgs, page=None, limit=None, best_only=False):
         """ Returns the list of submissions and corresponding aggragations based on inputs """
 
-        # Build lists of wanted users based on classrooms and specific users
-        list_classroom_id = [ObjectId(o) for o in user_input.aggregation]
-        classroom = list(self.database.aggregations.find({"_id": {"$in": list_classroom_id}}))
-        more_username = [s["students"] for s in classroom]  # Extract usernames of students
-        more_username = [y for x in more_username for y in x]  # Flatten lists
-        
-        # Get tasks based on categories
-        categories = set(user_input.org_tags)
-        more_tasks = [taskid for taskid, task in course.get_tasks().items() if categories.intersection(task.get_categories())]
-
-        #Base query
-        query_base = {
-                "username": {"$in": user_input.user + more_username},
-                "courseid": course.get_id(),
-                "taskid": {"$in": user_input.task + more_tasks}
-                }
-
-        # Additional query field
-        query_advanced = {}
-        if user_input.grade_min and not user_input.grade_max:
-            query_advanced["grade"] = {"$gte": float(user_input.grade_min)}
-        elif not user_input.grade_min and user_input.grade_max:
-            query_advanced["grade"] = {"$lte": float(user_input.grade_max)}
-        elif user_input.grade_min and user_input.grade_max:
-            query_advanced["grade"] = {"$gte": float(user_input.grade_min), "$lte": float(user_input.grade_max)}
-
+        submit_time_between = [None, None]
         try:
-            date_before = datetime.strptime(user_input.date_before, "%Y-%m-%d %H:%M:%S") if user_input.date_before else ''
-            date_after = datetime.strptime(user_input.date_after, "%Y-%m-%d %H:%M:%S") if user_input.date_after else ''
-
-            if date_before and not date_after:
-                query_advanced["submitted_on"] = {"$lte": date_before}
-            elif not date_before and date_after:
-                query_advanced["submitted_on"] = {"$gte": date_after}
-            elif date_before and date_after:
-                query_advanced["submitted_on"] = {"$gte": date_after, "$lte": date_before}
+            if user_input.get('date_before', ''):
+                submit_time_between[1] = user_input["date_before"]
+            if user_input.get('date_after', ''):
+                submit_time_between[0] = user_input["date_after"]
         except ValueError:  # If match of datetime.strptime() fails
-            pass
-        
-        # Query with tags
-        if len(user_input.filter_tags) == len(user_input.filter_tags_presence):
-            for i in range(0, len(user_input.filter_tags)):
-                if id_checker(user_input.filter_tags[i]):
-                    state = (user_input.filter_tags_presence[i] in ["True", "true"])
-                    query_advanced["tests." + user_input.filter_tags[i]] = {"$in": [None, False]} if not state else True
-            
-        # Mongo operations
-        data = list(self.database.submissions.find({**query_base, **query_advanced}).sort([(user_input.sort_by, 
-            pymongo.DESCENDING if user_input.order == "0" else pymongo.ASCENDING)]))
-        data = [dict(list(f.items()) + [("url", self.submission_url_generator(str(f["_id"])))]) for f in data]
+            msgs.append(_("Invalid dates"))
 
-        # Get best submissions from database
-        user_tasks = list(self.database.user_tasks.find(query_base, {"submissionid": 1, "_id": 0}))
-        best_submissions_list = [u["submissionid"] for u in user_tasks]  # list containing ids of best submissions
-        for d in data:
+        must_keep_best_submissions_only = "eval" in user_input or best_only
+
+        skip = None
+        if page and limit:
+            skip = (page-1) * limit
+
+        return self.get_selected_submissions(course, only_tasks=user_input["tasks"],
+                                             only_tasks_with_categories=user_input["org_tags"],
+                                             only_users=user_input["users"],
+                                             only_audiences=user_input["audiences"],
+                                             grade_between=[
+                                                 float(user_input["grade_min"]) if user_input.get('grade_min', '') else None,
+                                                 float(user_input["grade_max"]) if user_input.get('grade_max', '') else None
+                                             ],
+                                             submit_time_between=submit_time_between,
+                                             keep_only_evaluation_submissions=must_keep_best_submissions_only,
+                                             keep_only_crashes="crashes_only" in user_input,
+                                             sort_by=(user_input.get('sort_by', 'submitted_on'), user_input.get('order', 0) == 1),
+                                             limit=limit,
+                                             skip=skip)
+
+    def get_selected_submissions(self, course,
+                                 only_tasks=None, only_tasks_with_categories=None,
+                                 only_users=None, only_audiences=None,
+                                 with_tags=None,
+                                 grade_between=None, submit_time_between=None,
+                                 keep_only_evaluation_submissions=False,
+                                 keep_only_crashes=False,
+                                 sort_by=("submitted_on", True),
+                                 limit=None, skip=None):
+        """
+        All the parameters (excluding course, sort_by and keep_only_evaluation_submissions) can be None.
+        If that is the case, they are ignored.
+
+        :param course: the course
+        :param only_tasks: a list of task ids. Only submissions on these tasks will be loaded.
+        :param only_tasks_with_categories: keep only tasks that have a least one category in common with this list
+        :param only_users: a list of usernames. Only submissions from these users will be loaded.
+        :param only_audiences: a list of audience ids. Only submissions from users in these will be loaded
+        :param with_tags: a list of tags in the form [(tagid, present)], where present is a boolean indicating
+               whether the tag MUST be present or MUST NOT be present. If you don't mind if a tag is present or not,
+               just do not put it in the list.
+        :param grade_between: a tuple of two floating point number or None ([0.0, None], [None, 0.0] or [None, None])
+               that indicates bounds on the grade of the retrieved submissions
+        :param submit_time_between: a tuple of two dates or None ([datetime, None], [None, datetime] or [None, None])
+               that indicates bounds on the submission time of the submission. Format: "%Y-%m-%d %H:%M:%S"
+        :param keep_only_evaluation_submissions: True to keep only submissions that are counting for the evaluation
+        :param keep_only_crashes: True to keep only submissions that timed out or crashed
+        :param sort_by: a tuple (sort_column, ascending) where sort_column is in ["submitted_on", "username", "grade", "taskid"]
+               and ascending is either True or False.
+        :param limit: an integer representing the maximum number of submission to list.
+        :return: a list of submission filling the criterias above.
+        """
+
+        filter, best_submissions_list = self.get_submissions_filter(course, only_tasks=only_tasks,
+                                                                    only_tasks_with_categories=only_tasks_with_categories,
+                                                                    only_users=only_users,
+                                                                    only_audiences=only_audiences, with_tags=with_tags,
+                                                                    grade_between=grade_between,
+                                                                    submit_time_between=submit_time_between,
+                                                                    keep_only_evaluation_submissions=keep_only_evaluation_submissions,
+                                                                    keep_only_crashes=keep_only_crashes)
+
+        submissions = self.database.submissions.find(filter)
+        submissions_count = self.database.submissions.count_documents(filter)
+
+        if sort_by[0] not in ["submitted_on", "username", "grade", "taskid"]:
+            sort_by[0] = "submitted_on"
+        submissions = submissions.sort(sort_by[0], pymongo.ASCENDING if sort_by[1] else pymongo.DESCENDING)
+
+        if skip is not None and skip < submissions_count:
+            submissions.skip(skip)
+
+        if limit is not None:
+            submissions.limit(limit)
+
+        out = list(submissions)
+
+        for d in out:
             d["best"] = d["_id"] in best_submissions_list  # mark best submissions
 
-        # Keep best submissions
-        if "eval" in user_input or ("eval_dl" in user_input and "download" in web.input()):
-            data = [d for d in data if d["best"]]
-        return data, classroom
-
-    def get_input(self):
-        """ Loads web input, initialise default values and check/sanitise some inputs from users """
-        user_input = web.input(
-            user=[],
-            task=[],
-            aggregation=[],
-            org_tags=[],
-            grade_min='',
-            grade_max='',
-            sort_by="submitted_on",
-            order='0',  # "0" for pymongo.DESCENDING, anything else for pymongo.ASCENDING
-            limit='',
-            filter_tags=[],
-            filter_tags_presence=[],
-            date_after='',
-            date_before='',
-            stat='with_stat',
-        )
-
-        # Sanitise inputs
-        for item in itertools.chain(user_input.task, user_input.aggregation):
-            if not id_checker(item):
-                raise web.notfound()
-
-        if user_input.sort_by not in self._allowed_sort:
-            raise web.notfound()
-
-        digits = [user_input.grade_min, user_input.grade_max, user_input.order, user_input.limit]
-        for d in digits:
-            if d != '' and not d.isdigit():
-                raise web.notfound()
-
-        return user_input 
+        if limit is not None:
+            number_of_pages = submissions_count // limit + (submissions_count % limit > 0)
+            return out, submissions_count, number_of_pages
+        else:
+            return out

@@ -3,8 +3,9 @@
 # This file is part of INGInious. See the LICENSE and the COPYRIGHTS files for
 # more information about the licensing of this file.
 
+from collections import OrderedDict
 
-import web
+import flask
 
 from inginious.frontend.pages.course_admin.utils import make_csv, INGIniousAdminPage
 
@@ -17,17 +18,27 @@ class CourseStudentInfoPage(INGIniousAdminPage):
         course, __ = self.get_course_and_check_rights(courseid)
         return self.page(course, username)
 
+    def POST_AUTH(self, courseid, username):
+        data = flask.request.form
+        taskid = data["taskid"]
+        course, __ = self.get_course_and_check_rights(courseid)
+
+        self.user_manager.reset_user_task_state(courseid, taskid, username)
+
+        return self.page(course, username)
+
     def submission_url_generator(self, username, taskid):
         """ Generates a submission url """
-        return "?format=taskid%2Fusername&tasks=" + taskid + "&users=" + username
+        return "?tasks=" + taskid + "&users=" + username
 
     def page(self, course, username):
         """ Get all data and display the page """
         data = list(self.database.user_tasks.find({"username": username, "courseid": course.get_id()}))
 
-        tasks = course.get_tasks()
-        result = dict([(taskid, {"taskid": taskid, "name": tasks[taskid].get_name(self.user_manager.session_language()),
-                                 "tried": 0, "status": "notviewed", "grade": 0,
+        tasks = course.get_tasks(True)
+        user_task_list = course.get_task_dispenser().get_user_task_list([username])[username]
+        result = OrderedDict([(taskid, {"taskid": taskid, "name": tasks[taskid].get_name(self.user_manager.session_language()),
+                                 "tried": 0, "status": "notviewed", "grade": 0, "visible": False,
                                  "url": self.submission_url_generator(username, taskid)}) for taskid in tasks])
 
         for taskdata in data:
@@ -42,8 +53,11 @@ class CourseStudentInfoPage(INGIniousAdminPage):
                 result[taskdata["taskid"]]["grade"] = taskdata["grade"]
                 result[taskdata["taskid"]]["submissionid"] = str(taskdata["submissionid"])
 
-        if "csv" in web.input():
+        for taskid in user_task_list:
+            result[taskid]["visible"] = True
+
+        if "csv" in flask.request.args:
             return make_csv(result)
 
-        results = sorted(list(result.values()), key=lambda result: (tasks[result["taskid"]].get_order(), result["taskid"]))
-        return self.template_helper.get_renderer().course_admin.student_info(course, username, results)
+        return self.template_helper.render("course_admin/student_info.html", course=course,
+                                           username=username, data=result)

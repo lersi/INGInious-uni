@@ -10,30 +10,37 @@ function init_task_page(evaluate)
 
     //Init the task form, if we are on the task submission page
     var task_form = $('form#task');
-    task_form.on('submit', function()
-    {
+    task_form.on('submit', function() {
         submitTask(false);
         return false;
     });
 
     //Init the button that start a remote ssh server for debugging
-    $('form#task #task-submit-debug').on('click', function()
-    {
+    $('form#task #task-submit-debug').on('click', function() {
         submitTask(true);
     });
 
-    if(task_form.attr("data-wait-submission"))
-    {
+    //if INGInious tells us to wait for another submission
+    //this takes precedence over the link in the URL, in order to be consistent.
+    if(task_form.attr("data-wait-submission")) {
         loadOldSubmissionInput(task_form.attr("data-wait-submission"), false);
-        blurTaskForm();
-        resetAlerts();
-        displayTaskLoadingAlert(null, null);
         waitForSubmission(task_form.attr("data-wait-submission"));
+    }
+    else {
+        // Check if the page link contains a submission id to load, if needed
+        try {
+            // the class URLSearchParams may not exist in older browsers...
+            var loadFromURL = (new URLSearchParams(document.location.search.substring(1))).get("load");
+            if(loadFromURL !== null)
+                loadOldSubmissionInput(loadFromURL, true);
+        }
+        catch(error) {
+          console.error(error);
+        }
     }
 
     $('.submission').each(function() {
         $(this).on('click', clickOnSubmission);
-        $(this).find('a').on('click', selectSubmission);
     });
 
     // Allows to close cards
@@ -89,14 +96,11 @@ function updateTaskStatus(newStatus, grade)
     var task_status = $('#task_status');
     var task_grade = $('#task_grade');
 
-    var currentStatus = task_status.text().trim();
-    var currentGrade = parseFloat(task_grade.text().trim());
-
     task_status.html(newStatus);
     task_grade.text(grade);
 }
 
-//Creates a new submission (left column)
+//Creates a new submission (right column)
 function displayNewSubmission(id)
 {
     var submissions = $('#submissions');
@@ -106,17 +110,6 @@ function displayNewSubmission(id)
         class: "submission list-group-item list-group-item-warning",
         "data-submission-id": id
     }).on('click', clickOnSubmission);
-
-    if(evaluatedSubmission == "student") {
-        var actual_link = jQuery('<a/>', {
-            class:"allowed",
-            title:"Select for evaluation",
-            "data-toggle":"tooltip",
-            "data-placement": "right"
-        }).appendTo(submission_link).after("&nbsp;&nbsp;").on('click', selectSubmission);
-
-         jQuery('<i/>', {class: "fa fa-bookmark fa-fw"}).appendTo(actual_link);
-    }
 
     jQuery('<span id="txt"/>', {}).text(getDateTime()).appendTo(submission_link);
     
@@ -166,20 +159,8 @@ function updateSubmission(id, result, grade, tags)
     });
 }
 
-// Select submission handler
-function selectSubmission(e) {
-
-    e.stopPropagation();
-
-    var item = $(this).parent();
-    var id = item.attr('data-submission-id');
-
-    if($(this).hasClass('allowed'))
-        setSelectedSubmission(id, true, true);
-}
-
-// Set selected submission
-function setSelectedSubmission(id, fade, makepost) {
+// Change the evaluated submission displayed
+function displayEvaluatedSubmission(id, fade) {
     var item;
 
     $('#submissions').find('.submission').each(function() {
@@ -190,36 +171,25 @@ function setSelectedSubmission(id, fade, makepost) {
     // LTI does not support selecting a specific submission for evaluation
     if($("#my_submission").length) {
         var text = item.find("span[id='txt']").html();
-        var url = $('form#task').attr("action");
+        var submission_link = jQuery('<a/>', {
+            href: "#",
+            id: "my_submission",
+            class: "submission list-group-item list-group-item-action list-group-item-info",
+            "data-submission-id": id
+        }).on('click', clickOnSubmission);
 
-        var applyfn = function (data) {
-            if ('status' in data && data['status'] == 'done') {
-                var submission_link = jQuery('<a/>', {
-                    href: "#",
-                    id: "my_submission",
-                    class: "submission list-group-item list-group-item-action list-group-item-info",
-                    "data-submission-id": id
-                }).on('click', clickOnSubmission);
+        jQuery('<i/>', {class: "fa fa-chevron-right fa-fw"}).appendTo(submission_link).after("&nbsp;");
+        submission_link.append(text);
 
-                jQuery('<i/>', {class: "fa fa-chevron-right fa-fw"}).appendTo(submission_link).after("&nbsp;");
-                submission_link.append(text);
-
-                if (fade) {
-                    $("#my_submission").fadeOut(function () {
-                        $(this).replaceWith(submission_link.fadeIn().removeAttr('style'));
-                    });
-                } else {
-                    $("#my_submission").replaceWith(submission_link);
-                }
-
-                $("#share_my_submission").removeClass("hidden");
-            }
+        if (fade) {
+            $("#my_submission").fadeOut(function () {
+                $(this).replaceWith(submission_link.fadeIn().removeAttr('style'));
+            });
+        } else {
+            $("#my_submission").replaceWith(submission_link);
         }
 
-        if(makepost)
-            jQuery.post(url, {"@action": "set_submission", "submissionid": id}, null, "json").done(applyfn);
-        else
-            applyfn({"status":"done"})
+        $("#share_my_submission").removeClass("hidden");
     }
 
     updateTaskStatus(item.hasClass("list-group-item-success") ? "Succeeded" : "Failed", parseFloat(item.text().split("-")[1]));
@@ -393,10 +363,10 @@ function waitForSubmission(submissionid)
         jQuery.post(url, {"@action": "check", "submissionid": submissionid}, null, "json")
             .done(function(data)
             {
-                if("status" in data && data['status'] == "waiting")
+                if("status" in data && data['status'] === "waiting")
                 {
                     waitForSubmission(submissionid);
-                    if("ssh_host" in data && "ssh_port" in data && "ssh_password" in data)
+                    if("ssh_host" in data && "ssh_port" in data && "ssh_user" in data && "ssh_password" in data)
                         displayRemoteDebug(submissionid, data);
                     else
                         displayTaskLoadingAlert(data, submissionid);
@@ -429,9 +399,9 @@ function waitForSubmission(submissionid)
                     unblurTaskForm();
 
                     if("replace" in data && data["replace"] && $('#my_submission').length) {
-                        setSelectedSubmission(submissionid, true);
+                        displayEvaluatedSubmission(submissionid, true);
                     } else if($('#my_submission').length) {
-                        setSelectedSubmission($('#my_submission').attr('data-submission-id'), false);
+                        displayEvaluatedSubmission($('#my_submission').attr('data-submission-id'), false);
                     }
 
                     if("feedback_script" in data)
@@ -523,15 +493,16 @@ function displayRemoteDebug(submissionid, submission_wait_data)
 {
     var ssh_host = submission_wait_data["ssh_host"];
     var ssh_port = submission_wait_data["ssh_port"];
+    var ssh_user = submission_wait_data["ssh_user"];
     var ssh_password = submission_wait_data["ssh_password"];
 
-    var pre_content = "ssh worker@" + ssh_host + " -p " + ssh_port+ " -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no";
+    var pre_content = "ssh " + ssh_user + "@" + ssh_host + " -p " + ssh_port+ " -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no";
     var task_alert = $('#task_alert');
     var title = '<i class="fa fa-spinner fa-pulse fa-fw" aria-hidden="true"></i> ';
     var content = submission_wait_data["text"];
 
     //If not already set
-    if($('pre#commandssh', task_alert).text() != pre_content)
+    if($('pre#commandssh', task_alert).text() !== pre_content)
     {
         var remote_info = $("#ssh_template").clone();
 
@@ -543,7 +514,7 @@ function displayRemoteDebug(submissionid, submission_wait_data)
         if(webterm_link !== undefined)
         {
             var full_link = webterm_link + "?host=" + ssh_host + "&port=" + ssh_port + "&password=" + ssh_password;
-            var iframe = $('<iframe>', {
+            $('<iframe>', {
                 src:         full_link,
                 id:          'iframessh',
                 frameborder: 0,
@@ -915,5 +886,42 @@ function updateTagsToNewSubmission(elem, data){
         badge.attr("data-toggle", "tooltip");
         badge.attr("data-placement", "left");
         badge.attr('data-original-title', tags_ok.join(", "));
+    }
+}
+
+/*
+ * Loads the submission form from the local storage
+ * and calls the load input functions for each subproblem type
+ */
+function load_from_storage(courseid,taskid){
+    if (typeof(Storage) !== "undefined") {
+        var indict = JSON.parse(localStorage[courseid+"/"+taskid]);
+        for(var problemid in problems_types) {
+            // Submissionid is only used for files that can't be stored here
+            // It is set to null here.
+            window["load_input_" + problems_types[problemid]](null, problemid, indict);
+        }
+    } else {
+        alert("Your browser doesn't support web storage");
+    }
+}
+
+/*
+ * Saves a serialized version of the form which is typically
+ * how the submission input is stored and passed to the load input function.
+ */
+function save_to_storage(courseid,taskid){
+    if (typeof(Storage) !== "undefined") {
+        var data = $('form').serializeArray().reduce(function(obj, item) {
+            if(item.name in obj)
+                // Should be in an array case
+                obj[item.name].push(item.value);
+            else
+                obj[item.name] = Boolean(is_input_list[item.name]) ? [item.value] : item.value;
+            return obj;
+        }, {});
+        localStorage.setItem(courseid+"/"+taskid, JSON.stringify(data));
+    } else {
+        alert("Your browser doesn't support web storage");
     }
 }

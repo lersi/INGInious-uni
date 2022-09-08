@@ -13,11 +13,13 @@ import time
 import json
 import sys
 
+from yaml import SafeLoader
+
 from inginious.common.tags import Tag
-from inginious.frontend.tasks import WebAppTask
-from inginious.frontend.parsable_text import ParsableText
+from inginious.frontend.tasks import Task
+from inginious.frontend.task_dispensers.toc import TableOfContents
 from inginious.common.log import init_logging
-from inginious.common.course_factory import create_factories
+from inginious.frontend.course_factory import create_factories
 from inginious.client.client_sync import ClientSync
 from inginious.frontend.arch_helper import start_asyncio_and_zmq, create_arch
 from yaml import load
@@ -148,12 +150,11 @@ def test_web_task(yaml_data, task, config, yaml_path):
     :return: yaml_data if any error, {} otherwise
     """
     try:
-        web_task = WebAppTask(
+        web_task = Task(
             task.get_course_id(),
             task.get_id(),
             yaml_data,
             task.get_fs(),
-            task.get_translation_fs(),
             task.get_hook(),
             config["default_problem_types"]
         )  # Test of init a web task with the yaml_data. if the values are incorrect, exception will be raised
@@ -166,7 +167,7 @@ def test_web_task(yaml_data, task, config, yaml_path):
             p = ParsableText(yaml_data["problems"][sub_prob]["header"])  # parse the rst of the subproblem
             p.parse(debug=True)
         return {}
-    except BaseException as e:  # Rendering of WebAppTask failing
+    except BaseException as e:  # Rendering of Task failing
         print('{}: WEB TASK ERROR: {}'.format(yaml_path, e), file=sys.stderr)
         return yaml_data
 
@@ -184,7 +185,7 @@ def test_submission_yaml(client, course_factory, path, output, client_sync):
     """
     # print(os.path.join(test_path, yaml_file.name))
     with open(path, 'r') as yaml:
-        yaml_data = load(yaml)
+        yaml_data = load(yaml, Loader=SafeLoader)
         res = test_task(yaml_data, course_factory.get_task(yaml_data["courseid"], yaml_data["taskid"]), client, client_sync)
         if res != {}:
             output[path] = res
@@ -202,7 +203,7 @@ def test_task_yaml(path, output, course_factory, task_name, course_name, config)
     :return: None
     """
     with open(path, 'r') as yaml_file:
-        yaml_data = load(yaml_file)
+        yaml_data = load(yaml_file, Loader=SafeLoader)
     res = test_web_task(yaml_data, course_factory.get_task(course_name, task_name), config, path)
     if res != {}:
         output[path] = res
@@ -252,6 +253,7 @@ if __name__ == "__main__":
     parser.add_argument("task_dir", help="Courses directory")
     parser.add_argument("course_dir", help="Repository for the course to test")
     parser.add_argument("-f", "--file", help="Store in the specified file in a json format")
+    parser.add_argument("--tdisp", nargs="+", help="Python class import path for additionnal task dispensers")
     parser.add_argument("--ptype", nargs="+", help="Python class import path for additionnal subproblem types")
 
     args = parser.parse_args()
@@ -260,6 +262,10 @@ if __name__ == "__main__":
         # Init logging
         init_logging()
 
+    task_dispensers = {
+        task_dispenser.get_id(): task_dispenser for task_dispenser in [TableOfContents]
+    }
+
     problem_types = {
         problem_type.get_type(): problem_type for problem_type in [DisplayableCodeProblem,
                                                                    DisplayableCodeSingleLineProblem,
@@ -267,6 +273,16 @@ if __name__ == "__main__":
                                                                    DisplayableMultipleChoiceProblem,
                                                                    DisplayableMatchProblem]
     }
+
+    if args.tdisp:
+        for tdisp_loc in args.tdisp:
+            try:
+                tdisp = import_class(tdisp_loc)
+                task_dispensers[tdisp.get_id()] = tdisp
+            except:
+                print("Cannot load {}, exiting".format(tdisp_loc), file=sys.stderr)
+                exit(1)
+
     if args.ptype:
         for ptype_loc in args.ptype:
             try:
@@ -289,7 +305,7 @@ if __name__ == "__main__":
     fs_provider = LocalFSProvider(config["task_directory"])
 
     try:
-        course_factory, _ = create_factories(fs_provider, problem_types)  # used for getting tasks
+        course_factory, _ = create_factories(fs_provider, task_dispensers, problem_types)  # used for getting tasks
 
         client = create_client(config, course_factory, fs_provider)
 

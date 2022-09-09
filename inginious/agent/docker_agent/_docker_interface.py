@@ -58,10 +58,6 @@ class DockerInterface(object):  # pragma: no cover
             title = None
             try:
                 title = x.labels["org.inginious.grading.name"]
-        for x in self._docker.images.list(filters={"label": "org.inginious.grading.name"}):
-            title = None
-            try:
-                title = x.labels["org.inginious.grading.name"]
                 try:
                     created = datetime.strptime(x.attrs['Created'][:-4], "%Y-%m-%dT%H:%M:%S.%f").timestamp()
                 except:

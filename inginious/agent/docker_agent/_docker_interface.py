@@ -7,7 +7,6 @@
     (not asyncio) Interface to Docker
 """
 import os
-import re
 from datetime import datetime
 from typing import List, Tuple, Dict
 
@@ -58,40 +57,30 @@ class DockerInterface(object):  # pragma: no cover
             title = None
             try:
                 title = x.labels["org.inginious.grading.name"]
-                try:
-                    created = datetime.strptime(x.attrs['Created'][:-4], "%Y-%m-%dT%H:%M:%S.%f").timestamp()
-                except:
-                    # Docker sometimes gives strange timestamps
-                    # We'll ignore timezone and microsecond resolution and just search for a likely-looking string...
-                    m = re.search('(\d{4})[-/.]?(\d{2})[-/.]?(\d{1,2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?',
-                                  x.attrs['Created'], re.IGNORECASE)
-                    if (m == None):
-                        created = 0
-                        logging.getLogger("inginious.agent").warning(
-                            "Container %s has unparseable creation time (%s). May not be using latest version",
-                            title, x.attrs['Created'])
-                    else:
-                        created = datetime.strptime("{}-{}-{}T{}:{}:{}".format(m[1],m[2],m[3],m[4],m[5],m[6]), "%Y-%m-%dT%H:%M:%S").timestamp()
-
+                created = x.history()[0]['Created']
                 ports = [int(y) for y in x.labels["org.inginious.grading.ports"].split(
                     ",")] if "org.inginious.grading.ports" in x.labels else []
 
                 for docker_runtime in runtimes:
-                    if docker_runtime.run_as_root or "org.inginious.grading.need_root" not in x.labels:
-                        logger.info("Envtype %s (%s) can use container %s", docker_runtime.envtype, docker_runtime.runtime, title)
-                        if x.labels.get("org.inginious.grading.agent_version") != str(DOCKER_AGENT_VERSION):
-                            logger.warning(
-                                "Container %s is made for an old/newer version of the agent (container version is "
-                                "%s, but it should be %i). INGInious will ignore the container.", title,
-                                str(x.labels.get("org.inginious.grading.agent_version")), DOCKER_AGENT_VERSION)
-                            continue
+                    if "org.inginious.grading.need_root" in x.labels and not docker_runtime.run_as_root:
+                        continue
+                    if "org.inginious.grading.need_gpu" in x.labels and not docker_runtime.enables_gpu:
+                        continue
 
-                        images[docker_runtime.envtype][x.attrs['Id']] = {
-                            "title": title,
-                            "created": created,
-                            "ports": ports,
-                            "runtime": docker_runtime.runtime
-                        }
+                    logger.info("Envtype %s (%s) can use container %s", docker_runtime.envtype, docker_runtime.runtime, title)
+                    if x.labels.get("org.inginious.grading.agent_version") != str(DOCKER_AGENT_VERSION):
+                        logger.warning(
+                            "Container %s is made for an old/newer version of the agent (container version is "
+                            "%s, but it should be %i). INGInious will ignore the container.", title,
+                            str(x.labels.get("org.inginious.grading.agent_version")), DOCKER_AGENT_VERSION)
+                        continue
+
+                    images[docker_runtime.envtype][x.attrs['Id']] = {
+                        "title": title,
+                        "created": created,
+                        "ports": ports,
+                        "runtime": docker_runtime.runtime
+                    }
             except:
                 logging.getLogger("inginious.agent").exception("Container %s is badly formatted", title or "[cannot load title]")
 

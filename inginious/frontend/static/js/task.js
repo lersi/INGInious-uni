@@ -733,18 +733,29 @@ function load_input(submissionid, input)
     }
 }
 
+function ensureString(x)
+{
+    if (typeof x == "string") {
+        return x
+    } else if (Array.isArray(x) && x.length > 0) {
+        return ensureString(x[0])
+    } else {
+        return x + ""
+    }
+}
+
 function load_input_code(submissionid, key, input)
 {
     if(key in codeEditors) {
         if(key in input)
-            codeEditors[key].setValue(input[key], -1);
+            codeEditors[key].setValue(ensureString(input[key]), -1);
         else
             codeEditors[key].setValue("", -1);
     }
     else {
         var field = $("input[name='" + key + "']");
         if(key in input)
-            $(field).val(input[key]);
+            $(field).val(ensureString(input[key]));
         else
             $(field).val("");
     }

@@ -273,22 +273,26 @@ class MultipleChoiceProblem(Problem):
                 return False
             try:  # test conversion to int
                 for entry in task_input[self.get_id()]:
-                    if self.get_choice_with_index(int(entry)) is None:
+                    if task_input[self.get_id()] is None:
+                        if self._optional:
+                            task_input[self.get_id()] = ""
+                        else:
+                            return False
+                    elif self.get_choice_with_index(int(entry)) is None:
                         return False
             except ValueError:
-                if self._optional:
-                    task_input[self.get_id()] = ""
-                else:
-                    return False
+                return False
         else:
             try:  # test conversion to int
-                if self.get_choice_with_index(int(task_input[self.get_id()])) is None:
+                if task_input[self.get_id()] is None:
+                    if self._optional:
+                        task_input[self.get_id()] = ""
+                    else:
+                        return False
+                elif self.get_choice_with_index(int(task_input[self.get_id()])) is None:
                     return False
             except ValueError:
-                if self._optional:
-                    task_input[self.get_id()] = ""
-                else:
-                    return False
+                return False
         return True
 
     def check_answer(self, task_input, language):

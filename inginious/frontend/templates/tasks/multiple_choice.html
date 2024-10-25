@@ -5,7 +5,8 @@
 {{ header | safe}}
 {% for choice in choices %}
         <div class="form-check">
-            <input class="form-check-input" type="{% if checkbox %}checkbox{% else %}radio{% endif %}" name="{{pid}}" value="{{choice['index']}}" id="{{pid}}_{{choice['index']}}" />
+            <input class="form-check-input" type="{% if checkbox %}checkbox{% else %}radio{% endif %}" name="{{pid}}" value="{{choice['index']}}" id="{{pid}}_{{choice['index']}}" 
+            data-optional="{% if optional %}{{True}}{% else %}{{False}}{% endif %}" />
             <label class="form-check-label" for="{{pid}}_{{choice['index']}}">
                 {{ func(choice['text']) | safe }}
             </label>

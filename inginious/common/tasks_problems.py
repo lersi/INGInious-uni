@@ -245,6 +245,7 @@ class MultipleChoiceProblem(Problem):
         self._success_message = content.get("success_message", None)
 
         self._choices = good_choices + bad_choices
+        self._optional = content.get("optional", False)
 
     @classmethod
     def get_type(cls):
@@ -272,13 +273,23 @@ class MultipleChoiceProblem(Problem):
                 return False
             try:  # test conversion to int
                 for entry in task_input[self.get_id()]:
-                    if self.get_choice_with_index(int(entry)) is None:
+                    if task_input[self.get_id()] is None:
+                        if self._optional:
+                            task_input[self.get_id()] = ""
+                        else:
+                            return False
+                    elif self.get_choice_with_index(int(entry)) is None:
                         return False
             except ValueError:
                 return False
         else:
             try:  # test conversion to int
-                if self.get_choice_with_index(int(task_input[self.get_id()])) is None:
+                if task_input[self.get_id()] is None:
+                    if self._optional:
+                        task_input[self.get_id()] = ""
+                    else:
+                        return False
+                elif self.get_choice_with_index(int(task_input[self.get_id()])) is None:
                     return False
             except ValueError:
                 return False

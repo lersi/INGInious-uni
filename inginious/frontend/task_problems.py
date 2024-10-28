@@ -194,6 +194,7 @@ class DisplayableMultipleChoiceProblem(MultipleChoiceProblem, DisplayableProblem
                               translation=self.get_translation_obj(language))
         return template_helper.render("tasks/multiple_choice.html", pid=self.get_id(), header=header,
                                       checkbox=self._multiple, choices=choices,
+                                      optional=self._optional,
                                       func=lambda text: ParsableText(
                                           self.gettext(language, text) if text else "", "rst",
                                           translation=self.get_translation_obj(language))

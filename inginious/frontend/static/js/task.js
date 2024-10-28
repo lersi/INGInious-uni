@@ -237,7 +237,8 @@ function taskFormValid()
     {
         if(form.find("input[name='"+ $(this).attr('name')+"']:checked").length == 0)
         {
-            answered_to_all = false;
+            if($(this).attr('data-optional') != "True")
+                answered_to_all = false;
         }
     });
 
